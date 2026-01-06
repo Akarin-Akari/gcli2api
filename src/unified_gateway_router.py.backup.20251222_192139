@@ -1,0 +1,609 @@
+"""
+Unified Gateway Router - 统一API网关路由
+将多个后端服务整合到单一端点，支持优先级路由和故障转移
+
+优先级顺序：
+1. Antigravity API (gcli2api 本地) - 优先
+2. Copilot API (localhost:4141) - 备用
+"""
+
+import asyncio
+import json
+import time
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from log import log
+from src.httpx_client import http_client
+from src.utils import authenticate_bearer
+
+
+# ==================== 重试配置 ====================
+
+RETRY_CONFIG = {
+    "max_retries": 3,           # 最大重试次数
+    "base_delay": 1.0,          # 基础延迟（秒）
+    "max_delay": 10.0,          # 最大延迟（秒）
+    "exponential_base": 2,      # 指数退避基数
+    "retry_on_status": [500, 502, 503, 504],  # 需要重试的状态码
+}
+
+
+def normalize_tools(tools: List[Any]) -> List[Dict[str, Any]]:
+    """
+    Normalize tools to standard OpenAI format.
+
+    Standard format:
+    {
+        "type": "function",
+        "function": {
+            "name": "function_name",
+            "description": "...",
+            "parameters": {...}
+        }
+    }
+    """
+    normalized_tools = []
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+
+        normalized_tool = {"type": "function"}
+
+        # Case 1: Standard format - tool has 'function' key
+        if "function" in tool and isinstance(tool["function"], dict):
+            func = tool["function"]
+            # Ensure function has required 'name' field
+            if "name" in func:
+                normalized_tool["function"] = {
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                    "parameters": func.get("parameters", {})
+                }
+                normalized_tools.append(normalized_tool)
+            else:
+                log.warning(f"[Gateway] Skipping tool without function.name: {list(func.keys())}")
+
+        # Case 2: Flat format - tool itself has 'name' key (some clients)
+        elif "name" in tool:
+            normalized_tool["function"] = {
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "parameters": tool.get("parameters", {})
+            }
+            normalized_tools.append(normalized_tool)
+
+        # Case 3: Unknown format - log and skip
+        else:
+            log.warning(f"[Gateway] Unknown tool format, keys: {list(tool.keys())}")
+
+    return normalized_tools
+
+
+def normalize_messages(messages: List[Any]) -> List[Dict[str, Any]]:
+    """
+    Normalize and filter messages array.
+    - Remove null/None values
+    - Remove invalid message objects
+    - Ensure each message has required fields
+    """
+    normalized_messages = []
+
+    for msg in messages:
+        # Skip null/None values
+        if msg is None:
+            continue
+
+        # Skip non-dict values
+        if not isinstance(msg, dict):
+            log.warning(f"[Gateway] Skipping non-dict message: {type(msg)}")
+            continue
+
+        # Ensure message has 'role' field
+        if "role" not in msg:
+            log.warning(f"[Gateway] Skipping message without role: {list(msg.keys())}")
+            continue
+
+        # Ensure message has 'content' field (can be None for tool calls)
+        # But the message object itself must exist
+        normalized_messages.append(msg)
+
+    return normalized_messages
+
+
+def normalize_request_body(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize request body to standard OpenAI format.
+    Handles Cursor's non-standard format and other variations.
+
+    Cursor may send requests with:
+    - messages in different locations
+    - null values in messages array
+    - extra fields like 'reasoning', 'text', 'metadata', etc.
+    - non-standard tools format
+    - missing required fields
+    """
+    normalized = {}
+
+    # Extract model (required)
+    normalized["model"] = body.get("model", "gpt-4")
+
+    # Extract messages - try multiple possible locations
+    messages = None
+
+    # Standard location
+    if "messages" in body and body["messages"]:
+        messages = body["messages"]
+    # Some clients put messages in 'prompt' or 'input'
+    elif "prompt" in body:
+        prompt = body["prompt"]
+        if isinstance(prompt, str):
+            messages = [{"role": "user", "content": prompt}]
+        elif isinstance(prompt, list):
+            messages = prompt
+    elif "input" in body:
+        input_val = body["input"]
+        if isinstance(input_val, str):
+            messages = [{"role": "user", "content": input_val}]
+        elif isinstance(input_val, list):
+            messages = input_val
+
+    # If still no messages, create a default one
+    if not messages:
+        log.warning("[Gateway] No messages found in request body, creating default")
+        log.warning(f"[Gateway] Request body keys: {list(body.keys())}")
+        # Log first 500 chars of body for debugging
+        body_str = json.dumps(body, ensure_ascii=False)
+        log.warning(f"[Gateway] Request body preview: {body_str[:500]}...")
+        messages = [{"role": "user", "content": "Hello"}]
+
+    # Normalize and filter messages (remove null values, etc.)
+    normalized["messages"] = normalize_messages(messages)
+
+    # Copy standard OpenAI fields (except tools which needs special handling)
+    standard_fields = [
+        "stream", "temperature", "top_p", "max_tokens", "stop",
+        "n", "frequency_penalty", "presence_penalty", "logit_bias",
+        "logprobs", "response_format", "seed", "tool_choice",
+        "user", "functions", "function_call"
+    ]
+
+    for field in standard_fields:
+        if field in body:
+            normalized[field] = body[field]
+
+    # Handle tools field specially - normalize format
+    if "tools" in body and body["tools"]:
+        normalized_tools = normalize_tools(body["tools"])
+        if normalized_tools:
+            normalized["tools"] = normalized_tools
+
+    # Set default stream to False if not specified
+    if "stream" not in normalized:
+        normalized["stream"] = False
+
+    log.info(f"[Gateway] Normalized request: model={normalized['model']}, messages_count={len(normalized['messages'])}, stream={normalized.get('stream')}, tools_count={len(normalized.get('tools', []))}")
+
+    return normalized
+
+
+# 创建路由器
+router = APIRouter(prefix="/gateway", tags=["Unified Gateway"])
+
+# 后端服务配置
+BACKENDS = {
+    "antigravity": {
+        "name": "Antigravity",
+        "base_url": "http://127.0.0.1:7861/antigravity/v1",
+        "priority": 1,  # 数字越小优先级越高
+        "timeout": 60.0,  # 普通请求超时
+        "stream_timeout": 300.0,  # 流式请求超时（5分钟）
+        "max_retries": 2,  # 最大重试次数
+        "enabled": True,
+    },
+    "copilot": {
+        "name": "Copilot",
+        "base_url": "http://127.0.0.1:4141/v1",
+        "priority": 2,
+        "timeout": 120.0,  # 思考模型需要更长时间
+        "stream_timeout": 600.0,  # 流式请求超时（10分钟，GPT-5.2思考模型）
+        "max_retries": 3,  # 最大重试次数
+        "enabled": True,
+    },
+}
+
+# 模型到后端的映射（可选，用于特定模型强制使用特定后端）
+MODEL_BACKEND_MAPPING = {
+    # Copilot 专属模型
+    "gpt-4": "copilot",
+    "gpt-4o": "copilot",
+    "gpt-4o-mini": "copilot",
+    "gpt-4.1": "copilot",
+    "gpt-5": "copilot",
+    "gpt-5.1": "copilot",
+    "gpt-5.2": "copilot",
+    # Antigravity 专属模型
+    "gemini-2.5-pro": "antigravity",
+    "gemini-2.5-flash": "antigravity",
+    "gemini-3-pro-preview": "antigravity",
+    # Claude 模型 - 两边都有，优先 Antigravity
+    "claude-sonnet-4": "antigravity",
+    "claude-sonnet-4.5": "antigravity",
+    "claude-opus-4.5": "antigravity",
+    "claude-haiku-4.5": "antigravity",
+}
+
+
+def get_sorted_backends() -> List[Tuple[str, Dict]]:
+    """获取按优先级排序的后端列表"""
+    enabled_backends = [(k, v) for k, v in BACKENDS.items() if v.get("enabled", True)]
+    return sorted(enabled_backends, key=lambda x: x[1]["priority"])
+
+
+def get_backend_for_model(model: str) -> Optional[str]:
+    """根据模型名称获取指定后端"""
+    # 精确匹配
+    if model in MODEL_BACKEND_MAPPING:
+        return MODEL_BACKEND_MAPPING[model]
+
+    # 前缀匹配
+    for model_prefix, backend in MODEL_BACKEND_MAPPING.items():
+        if model.startswith(model_prefix):
+            return backend
+
+    return None  # 使用默认优先级
+
+
+def calculate_retry_delay(attempt: int, config: Dict = None) -> float:
+    """
+    计算重试延迟时间（指数退避）
+    
+    Args:
+        attempt: 当前重试次数（从0开始）
+        config: 重试配置
+    
+    Returns:
+        延迟时间（秒）
+    """
+    if config is None:
+        config = RETRY_CONFIG
+    
+    base_delay = config.get("base_delay", 1.0)
+    max_delay = config.get("max_delay", 10.0)
+    exponential_base = config.get("exponential_base", 2)
+    
+    delay = base_delay * (exponential_base ** attempt)
+    return min(delay, max_delay)
+
+
+def should_retry(status_code: int, attempt: int, max_retries: int) -> bool:
+    """
+    判断是否应该重试
+    
+    Args:
+        status_code: HTTP 状态码
+        attempt: 当前重试次数
+        max_retries: 最大重试次数
+    
+    Returns:
+        是否应该重试
+    """
+    if attempt >= max_retries:
+        return False
+    
+    retry_on_status = RETRY_CONFIG.get("retry_on_status", [500, 502, 503, 504])
+    return status_code in retry_on_status
+
+
+async def check_backend_health(backend_key: str) -> bool:
+    """检查后端服务健康状态"""
+    backend = BACKENDS.get(backend_key)
+    if not backend or not backend.get("enabled", True):
+        return False
+
+    try:
+        async with http_client.get_client(timeout=5.0) as client:
+            response = await client.get(f"{backend['base_url']}/models")
+            return response.status_code == 200
+    except Exception as e:
+        log.warning(f"Backend {backend_key} health check failed: {e}")
+        return False
+
+
+async def proxy_request_to_backend(
+    backend_key: str,
+    endpoint: str,
+    method: str,
+    headers: Dict[str, str],
+    body: Any,
+    stream: bool = False,
+) -> Tuple[bool, Any]:
+    """
+    代理请求到指定后端
+
+    Returns:
+        Tuple[bool, Any]: (成功标志, 响应内容或错误信息)
+    """
+    backend = BACKENDS.get(backend_key)
+    if not backend:
+        return False, f"Backend {backend_key} not found"
+
+    url = f"{backend['base_url']}{endpoint}"
+    timeout = backend.get("timeout", 30.0)
+
+    # 构建请求头
+    request_headers = {
+        "Content-Type": "application/json",
+        "Authorization": headers.get("authorization", "Bearer dummy"),
+    }
+
+    try:
+        if stream:
+            # 流式请求
+            return await proxy_streaming_request(url, method, request_headers, body, timeout)
+        else:
+            # 非流式请求
+            async with http_client.get_client(timeout=timeout) as client:
+                if method.upper() == "POST":
+                    response = await client.post(url, json=body, headers=request_headers)
+                elif method.upper() == "GET":
+                    response = await client.get(url, headers=request_headers)
+                else:
+                    return False, f"Unsupported method: {method}"
+
+                if response.status_code >= 400:
+                    error_text = response.text
+                    log.warning(f"Backend {backend_key} returned error {response.status_code}: {error_text[:200]}")
+                    return False, f"Backend error: {response.status_code}"
+
+                return True, response.json()
+
+    except httpx.TimeoutException:
+        log.warning(f"Backend {backend_key} timeout")
+        return False, "Request timeout"
+    except httpx.ConnectError:
+        log.warning(f"Backend {backend_key} connection failed")
+        return False, "Connection failed"
+    except Exception as e:
+        log.error(f"Backend {backend_key} request failed: {e}")
+        return False, str(e)
+
+
+async def proxy_streaming_request(
+    url: str,
+    method: str,
+    headers: Dict[str, str],
+    body: Any,
+    timeout: float,
+) -> Tuple[bool, Any]:
+    """处理流式代理请求"""
+    try:
+        client = httpx.AsyncClient(timeout=None)
+
+        async def stream_generator():
+            try:
+                async with client.stream(method, url, json=body, headers=headers) as response:
+                    if response.status_code >= 400:
+                        error_text = await response.aread()
+                        log.warning(f"Streaming request failed: {response.status_code}")
+                        yield f"data: {json.dumps({'error': 'Backend error', 'status': response.status_code})}\n\n"
+                        return
+
+                    async for chunk in response.aiter_bytes():
+                        if chunk:
+                            yield chunk.decode("utf-8", errors="ignore")
+            finally:
+                await client.aclose()
+
+        return True, stream_generator()
+
+    except Exception as e:
+        log.error(f"Streaming request failed: {e}")
+        return False, str(e)
+
+
+async def route_request_with_fallback(
+    endpoint: str,
+    method: str,
+    headers: Dict[str, str],
+    body: Any,
+    model: Optional[str] = None,
+    stream: bool = False,
+) -> Any:
+    """
+    带故障转移的请求路由
+
+    优先使用指定后端，失败时自动切换到备用后端
+    """
+    # 确定后端顺序
+    specified_backend = get_backend_for_model(model) if model else None
+    sorted_backends = get_sorted_backends()
+
+    if specified_backend:
+        # 将指定后端移到最前面
+        sorted_backends = [(k, v) for k, v in sorted_backends if k == specified_backend] + \
+                         [(k, v) for k, v in sorted_backends if k != specified_backend]
+
+    last_error = None
+
+    for backend_key, backend_config in sorted_backends:
+        log.info(f"Trying backend: {backend_config['name']} for {endpoint}")
+
+        success, result = await proxy_request_to_backend(
+            backend_key, endpoint, method, headers, body, stream
+        )
+
+        if success:
+            log.info(f"Request succeeded via {backend_config['name']}")
+            return result
+
+        last_error = result
+        log.warning(f"Backend {backend_config['name']} failed: {result}, trying next...")
+
+    # 所有后端都失败
+    raise HTTPException(
+        status_code=503,
+        detail=f"All backends failed. Last error: {last_error}"
+    )
+
+
+# ==================== API 端点 ====================
+
+
+@router.get("/v1/models")
+@router.get("/models")  # 别名路由，兼容不同客户端配置
+async def list_models(request: Request):
+    """获取所有后端的模型列表（合并去重）"""
+    log.info(f"[Gateway] Received models request at {request.url.path}")
+    all_models = set()
+
+    for backend_key, backend_config in get_sorted_backends():
+        try:
+            async with http_client.get_client(timeout=10.0) as client:
+                response = await client.get(
+                    f"{backend_config['base_url']}/models",
+                    headers={"Authorization": "Bearer dummy"}
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    models = data.get("data", [])
+                    for model in models:
+                        model_id = model.get("id") if isinstance(model, dict) else model
+                        if model_id:
+                            all_models.add(model_id)
+        except Exception as e:
+            log.warning(f"Failed to get models from {backend_key}: {e}")
+
+    return {
+        "object": "list",
+        "data": [{"id": m, "object": "model", "owned_by": "gateway"} for m in sorted(all_models)]
+    }
+
+
+@router.post("/v1/chat/completions")
+@router.post("/chat/completions")  # 别名路由，兼容 Base URL 为 /gateway 的客户端
+async def chat_completions(
+    request: Request,
+    token: str = Depends(authenticate_bearer)
+):
+    """统一聊天完成端点 - 自动路由到最佳后端"""
+    log.info(f"[Gateway] Received chat request at {request.url.path}")
+    try:
+        raw_body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    # Normalize request body to standard OpenAI format
+    body = normalize_request_body(raw_body)
+
+    model = body.get("model", "")
+    stream = body.get("stream", False)
+
+    headers = dict(request.headers)
+
+    result = await route_request_with_fallback(
+        endpoint="/chat/completions",
+        method="POST",
+        headers=headers,
+        body=body,
+        model=model,
+        stream=stream,
+    )
+
+    if stream and hasattr(result, "__anext__"):
+        return StreamingResponse(
+            result,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            }
+        )
+
+    return JSONResponse(content=result)
+
+
+@router.post("/v1/messages")
+@router.post("/messages")  # 别名路由，兼容 Base URL 为 /gateway 的客户端
+async def anthropic_messages(
+    request: Request,
+    token: str = Depends(authenticate_bearer)
+):
+    """Anthropic Messages API 兼容端点"""
+    log.info(f"[Gateway] Received messages request at {request.url.path}")
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    model = body.get("model", "")
+    stream = body.get("stream", False)
+
+    headers = dict(request.headers)
+
+    result = await route_request_with_fallback(
+        endpoint="/messages",
+        method="POST",
+        headers=headers,
+        body=body,
+        model=model,
+        stream=stream,
+    )
+
+    if stream and hasattr(result, "__anext__"):
+        return StreamingResponse(
+            result,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+        )
+
+    return JSONResponse(content=result)
+
+
+@router.get("/health")
+async def gateway_health():
+    """网关健康检查 - 返回所有后端状态"""
+    backend_status = {}
+
+    for backend_key, backend_config in BACKENDS.items():
+        is_healthy = await check_backend_health(backend_key)
+        backend_status[backend_key] = {
+            "name": backend_config["name"],
+            "url": backend_config["base_url"],
+            "priority": backend_config["priority"],
+            "enabled": backend_config.get("enabled", True),
+            "healthy": is_healthy,
+        }
+
+    all_healthy = any(s["healthy"] for s in backend_status.values())
+
+    return {
+        "status": "healthy" if all_healthy else "degraded",
+        "backends": backend_status,
+        "timestamp": time.time(),
+    }
+
+
+@router.post("/config/backend/{backend_key}/toggle")
+async def toggle_backend(
+    backend_key: str,
+    token: str = Depends(authenticate_bearer)
+):
+    """启用/禁用指定后端"""
+    if backend_key not in BACKENDS:
+        raise HTTPException(status_code=404, detail=f"Backend {backend_key} not found")
+
+    BACKENDS[backend_key]["enabled"] = not BACKENDS[backend_key].get("enabled", True)
+
+    return {
+        "backend": backend_key,
+        "enabled": BACKENDS[backend_key]["enabled"],
+    }

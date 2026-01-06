@@ -1,0 +1,928 @@
+from __future__ import annotations
+
+import json
+import os
+import time
+import uuid
+from typing import Any, Dict, Optional
+import json
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from log import log
+
+from .antigravity_api import (
+    build_antigravity_request_body,
+    send_antigravity_request_no_stream,
+    send_antigravity_request_stream,
+)
+from .anthropic_converter import convert_anthropic_request_to_antigravity_components
+from .anthropic_streaming import antigravity_sse_to_anthropic_sse
+from .token_estimator import estimate_input_tokens
+
+
+# ====================== 导入智能降级管理器 ======================
+from .fallback_manager import (
+    is_quota_exhausted_error,
+    is_retryable_error,
+    is_403_error,
+    is_credential_unavailable_error,
+    get_cross_pool_fallback,
+    is_haiku_model,
+    is_model_supported,
+    HAIKU_FALLBACK_TARGET,
+    COPILOT_URL,
+)
+
+
+def _get_fallback_models(model_name: str) -> list:
+    """
+    获取模型的降级链（使用新的跨池降级逻辑）
+
+    注意：这个函数用于预计算降级目标，不会打印日志。
+    实际降级时会在错误处理中打印日志。
+
+    Args:
+        model_name: 当前模型名
+
+    Returns:
+        降级模型列表
+    """
+    fallback_list = []
+
+    # Haiku 模型特殊处理
+    if is_haiku_model(model_name):
+        fallback_list.append(HAIKU_FALLBACK_TARGET)
+        return fallback_list
+
+    # 获取跨池降级目标（使用 debug 级别日志，避免预计算时打印）
+    cross_pool_fallback = get_cross_pool_fallback(model_name, log_level="debug")
+    if cross_pool_fallback:
+        fallback_list.append(cross_pool_fallback)
+
+    return fallback_list
+
+
+def _should_fallback(error_msg: str) -> bool:
+    """
+    判断是否应该触发模型降级
+
+    新逻辑：
+    - 只有额度用尽错误（429 + MODEL_CAPACITY_EXHAUSTED）才触发降级
+    - 400/普通429/5xx 错误应该重试，不触发降级
+    - 403 错误需要触发凭证验证
+
+    Args:
+        error_msg: 错误消息
+
+    Returns:
+        True 如果应该降级，False 如果应该重试或失败
+    """
+    # 只有额度用尽才触发降级
+    return is_quota_exhausted_error(error_msg)
+
+
+def _is_thinking_format_error(error_msg: str) -> bool:
+    """
+    检测是否是 thinking 格式相关的 400 错误。
+
+    这类错误通常包含以下关键词：
+    - "When thinking is disabled"
+    - "thinking block"
+    - "redacted_thinking"
+    """
+    error_lower = str(error_msg).lower()
+    thinking_keywords = [
+        "when thinking is disabled",
+        "thinking block",
+        "redacted_thinking",
+        "must start with a thinking block",
+        "expected `thinking`",
+    ]
+    return any(kw in error_lower for kw in thinking_keywords)
+
+
+def _strip_thinking_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    从请求 payload 中移除所有 thinking blocks。
+    用于 400 错误的保底重试。
+    """
+    if not payload:
+        return payload
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return payload
+
+    cleaned_messages = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            cleaned_messages.append(msg)
+            continue
+
+        role = msg.get("role")
+        content = msg.get("content")
+
+        if role != "assistant" or not isinstance(content, list):
+            cleaned_messages.append(msg)
+            continue
+
+        # 过滤 thinking blocks
+        cleaned_content = [
+            item for item in content
+            if not (isinstance(item, dict) and item.get("type") in ("thinking", "redacted_thinking"))
+        ]
+
+        if not cleaned_content:
+            cleaned_content = [{"type": "text", "text": "..."}]
+
+        cleaned_msg = msg.copy()
+        cleaned_msg["content"] = cleaned_content
+        cleaned_messages.append(cleaned_msg)
+
+    new_payload = payload.copy()
+    new_payload["messages"] = cleaned_messages
+    return new_payload
+
+def _get_fallback_model(current_model: str) -> str | None:
+    """获取降级模型"""
+    fallback_list = MODEL_FALLBACK_CHAIN.get(current_model, [])
+    return fallback_list[0] if fallback_list else None
+
+
+async def _handle_request_with_thinking_retry(
+    request_body: Dict[str, Any],
+    cred_mgr,
+    is_stream: bool,
+    original_payload: Dict[str, Any],
+) -> tuple:
+    """
+    带 thinking 错误重试的请求处理包装器。
+
+    如果遇到 thinking 格式相关的 400 错误，会自动清理 thinking blocks 并重试一次。
+    """
+    try:
+        if is_stream:
+            return await send_antigravity_request_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
+        else:
+            return await send_antigravity_request_no_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
+    except Exception as e:
+        error_msg = str(e)
+
+        # 检查是否是 thinking 格式错误
+        if "(400)" in error_msg and _is_thinking_format_error(error_msg):
+            log.warning(
+                f"[ANTHROPIC] 检测到 thinking 格式错误，尝试清理 thinking blocks 后重试: {error_msg[:200]}"
+            )
+
+            # 清理 payload 中的 thinking blocks
+            cleaned_payload = _strip_thinking_from_payload(original_payload)
+
+            # 重新构建请求
+            from .anthropic_converter import convert_anthropic_request_to_antigravity_components
+            from .antigravity_api import build_antigravity_request_body
+
+            cleaned_components = convert_anthropic_request_to_antigravity_components(cleaned_payload)
+            cleaned_request_body = build_antigravity_request_body(**cleaned_components)
+
+            log.info("[ANTHROPIC] 已清理 thinking blocks，正在重试请求...")
+
+            # 重试请求
+            if is_stream:
+                return await send_antigravity_request_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=True)
+            else:
+                return await send_antigravity_request_no_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=True)
+
+        # 不是 thinking 错误，继续抛出
+        raise
+
+router = APIRouter()
+security = HTTPBearer(auto_error=False)
+
+_DEBUG_TRUE = {"1", "true", "yes", "on"}
+_REDACTED = "<REDACTED>"
+_SENSITIVE_KEYS = {
+    "authorization",
+    "x-api-key",
+    "api_key",
+    "apikey",
+    "access_token",
+    "refresh_token",
+    "token",
+    "password",
+    "secret",
+}
+
+def _remove_nulls_for_tool_input(value: Any) -> Any:
+    """
+    递归移除 dict/list 中值为 null/None 的字段/元素。
+
+    背景：Roo/Kilo 在 Anthropic native tool 路径下，若收到 tool_use.input 中包含 null，
+    可能会把 null 当作真实入参执行（例如“在 null 中搜索”）。因此在返回 tool_use.input 前做兜底清理。
+    """
+    if isinstance(value, dict):
+        cleaned: Dict[str, Any] = {}
+        for k, v in value.items():
+            if v is None:
+                continue
+            cleaned[k] = _remove_nulls_for_tool_input(v)
+        return cleaned
+
+    if isinstance(value, list):
+        cleaned_list = []
+        for item in value:
+            if item is None:
+                continue
+            cleaned_list.append(_remove_nulls_for_tool_input(item))
+        return cleaned_list
+
+    return value
+
+
+def _anthropic_debug_max_chars() -> int:
+    """
+    调试日志中单个字符串字段的最大输出长度（避免把 base64 图片/超长 schema 打爆日志）。
+    """
+    raw = str(os.getenv("ANTHROPIC_DEBUG_MAX_CHARS", "")).strip()
+    if not raw:
+        return 2000
+    try:
+        return max(200, int(raw))
+    except Exception:
+        return 2000
+
+
+def _anthropic_debug_enabled() -> bool:
+    return str(os.getenv("ANTHROPIC_DEBUG", "")).strip().lower() in _DEBUG_TRUE
+
+
+def _anthropic_debug_body_enabled() -> bool:
+    """
+    是否打印请求体/下游请求体等“高体积”调试日志。
+
+    说明：`ANTHROPIC_DEBUG=1` 仅开启 token 对比等精简日志；为避免刷屏，入参/下游 body 必须显式开启。
+    """
+    return str(os.getenv("ANTHROPIC_DEBUG_BODY", "")).strip().lower() in _DEBUG_TRUE
+
+
+def _redact_for_log(value: Any, *, key_hint: str | None = None, max_chars: int) -> Any:
+    """
+    递归脱敏/截断用于日志打印的 JSON。
+
+    目标：
+    - 让用户能看到“实际入参结构”（system/messages/tools 等）
+    - 默认避免泄露凭证/令牌
+    - 避免把图片 base64 或超长字段直接写入日志文件
+    """
+    if isinstance(value, dict):
+        redacted: Dict[str, Any] = {}
+        for k, v in value.items():
+            k_str = str(k)
+            k_lower = k_str.strip().lower()
+            if k_lower in _SENSITIVE_KEYS:
+                redacted[k_str] = _REDACTED
+                continue
+            redacted[k_str] = _redact_for_log(v, key_hint=k_lower, max_chars=max_chars)
+        return redacted
+
+    if isinstance(value, list):
+        return [_redact_for_log(v, key_hint=key_hint, max_chars=max_chars) for v in value]
+
+    if isinstance(value, str):
+        if (key_hint or "").lower() == "data" and len(value) > 64:
+            return f"<base64 len={len(value)}>"
+        if len(value) > max_chars:
+            head = value[: max_chars // 2]
+            tail = value[-max_chars // 2 :]
+            return f"{head}<...省略 {len(value) - len(head) - len(tail)} 字符...>{tail}"
+        return value
+
+    return value
+
+
+def _json_dumps_for_log(data: Any) -> str:
+    try:
+        return json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    except Exception:
+        return str(data)
+
+
+def _debug_log_request_payload(request: Request, payload: Dict[str, Any]) -> None:
+    """
+    在开启 `ANTHROPIC_DEBUG` 时打印入参（已脱敏/截断）。
+    """
+    if not _anthropic_debug_enabled() or not _anthropic_debug_body_enabled():
+        return
+
+    max_chars = _anthropic_debug_max_chars()
+    safe_payload = _redact_for_log(payload, max_chars=max_chars)
+
+    headers_of_interest = {
+        "content-type": request.headers.get("content-type"),
+        "content-length": request.headers.get("content-length"),
+        "anthropic-version": request.headers.get("anthropic-version"),
+        "user-agent": request.headers.get("user-agent"),
+    }
+    safe_headers = _redact_for_log(headers_of_interest, max_chars=max_chars)
+    log.info(f"[ANTHROPIC][DEBUG] headers={_json_dumps_for_log(safe_headers)}")
+    log.info(f"[ANTHROPIC][DEBUG] payload={_json_dumps_for_log(safe_payload)}")
+
+
+def _debug_log_downstream_request_body(request_body: Dict[str, Any]) -> None:
+    """
+    在开启 `ANTHROPIC_DEBUG` 时打印最终转发到下游的请求体（已截断）。
+    """
+    if not _anthropic_debug_enabled() or not _anthropic_debug_body_enabled():
+        return
+
+    max_chars = _anthropic_debug_max_chars()
+    safe_body = _redact_for_log(request_body, max_chars=max_chars)
+    log.info(f"[ANTHROPIC][DEBUG] downstream_request_body={_json_dumps_for_log(safe_body)}")
+
+
+def _anthropic_error(
+    *,
+    status_code: int,
+    message: str,
+    error_type: str = "api_error",
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"type": "error", "error": {"type": error_type, "message": message}},
+    )
+
+
+def _extract_api_token(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials]
+) -> Optional[str]:
+    """
+    Anthropic 生态客户端通常使用 `x-api-key`；现有项目其它路由使用 `Authorization: Bearer`。
+    这里同时兼容两种方式，便于“无感接入”。
+    """
+    if credentials and credentials.credentials:
+        return credentials.credentials
+
+    authorization = request.headers.get("authorization")
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1].strip()
+
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key:
+        return x_api_key.strip()
+
+    return None
+
+
+def _infer_project_and_session(credential_data: Dict[str, Any]) -> tuple[str, str]:
+    project_id = credential_data.get("project_id")
+    session_id = f"session-{uuid.uuid4().hex}"   
+    return str(project_id), str(session_id)
+
+def _pick_usage_metadata_from_antigravity_response(response_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    兼容下游 usageMetadata 的多种落点：
+    - response.usageMetadata
+    - response.candidates[0].usageMetadata
+
+    如两者同时存在，优先选择“字段更完整”的一侧。
+    """
+    response = response_data.get("response", {}) or {}
+    if not isinstance(response, dict):
+        return {}
+
+    response_usage = response.get("usageMetadata", {}) or {}
+    if not isinstance(response_usage, dict):
+        response_usage = {}
+
+    candidate = (response.get("candidates", []) or [{}])[0] or {}
+    if not isinstance(candidate, dict):
+        candidate = {}
+    candidate_usage = candidate.get("usageMetadata", {}) or {}
+    if not isinstance(candidate_usage, dict):
+        candidate_usage = {}
+
+    fields = ("promptTokenCount", "candidatesTokenCount", "totalTokenCount")
+
+    def score(d: Dict[str, Any]) -> int:
+        s = 0
+        for f in fields:
+            if f in d and d.get(f) is not None:
+                s += 1
+        return s
+
+    if score(candidate_usage) > score(response_usage):
+        return candidate_usage
+    return response_usage
+
+
+def _convert_antigravity_response_to_anthropic_message(
+    response_data: Dict[str, Any],
+    *,
+    model: str,
+    message_id: str,
+    fallback_input_tokens: int = 0,
+) -> Dict[str, Any]:
+    candidate = response_data.get("response", {}).get("candidates", [{}])[0] or {}
+    parts = candidate.get("content", {}).get("parts", []) or []
+    usage_metadata = _pick_usage_metadata_from_antigravity_response(response_data)
+
+    content = []
+    has_tool_use = False
+
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+
+        if part.get("thought") is True:
+            block: Dict[str, Any] = {"type": "thinking", "thinking": part.get("text", "")}
+            signature = part.get("thoughtSignature")
+            if signature:
+                block["signature"] = signature
+            content.append(block)
+            continue
+
+        if "text" in part:
+            content.append({"type": "text", "text": part.get("text", "")})
+            continue
+
+        if "functionCall" in part:
+            has_tool_use = True
+            fc = part.get("functionCall", {}) or {}
+            content.append(
+                {
+                    "type": "tool_use",
+                    "id": fc.get("id") or f"toolu_{uuid.uuid4().hex}",
+                    "name": fc.get("name") or "",
+                    "input": _remove_nulls_for_tool_input(fc.get("args", {}) or {}),
+                }
+            )
+            continue
+
+        if "inlineData" in part:
+            inline = part.get("inlineData", {}) or {}
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": inline.get("mimeType", "image/png"),
+                        "data": inline.get("data", ""),
+                    },
+                }
+            )
+            continue
+
+    finish_reason = candidate.get("finishReason")
+    stop_reason = "tool_use" if has_tool_use else "end_turn"
+    if finish_reason == "MAX_TOKENS" and not has_tool_use:
+        stop_reason = "max_tokens"
+
+    input_tokens_present = isinstance(usage_metadata, dict) and "promptTokenCount" in usage_metadata
+    output_tokens_present = isinstance(usage_metadata, dict) and "candidatesTokenCount" in usage_metadata
+
+    input_tokens = usage_metadata.get("promptTokenCount", 0) if isinstance(usage_metadata, dict) else 0
+    output_tokens = usage_metadata.get("candidatesTokenCount", 0) if isinstance(usage_metadata, dict) else 0
+
+    if not input_tokens_present:
+        input_tokens = max(0, int(fallback_input_tokens or 0))
+    if not output_tokens_present:
+        output_tokens = 0
+
+    return {
+        "id": message_id,
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": int(input_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+        },
+    }
+
+
+@router.post("/antigravity/v1/messages")
+async def anthropic_messages(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    from config import get_api_password
+
+    password = await get_api_password()
+    token = _extract_api_token(request, credentials)
+    if token != password:
+        return _anthropic_error(status_code=403, message="密码错误", error_type="authentication_error")
+
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return _anthropic_error(
+            status_code=400, message=f"JSON 解析失败: {str(e)}", error_type="invalid_request_error"
+        )
+
+    if not isinstance(payload, dict):
+        return _anthropic_error(
+            status_code=400, message="请求体必须为 JSON object", error_type="invalid_request_error"
+        )
+
+    _debug_log_request_payload(request, payload)
+
+    model = payload.get("model")
+    max_tokens = payload.get("max_tokens")
+    messages = payload.get("messages")
+    stream = bool(payload.get("stream", False))
+    thinking_present = "thinking" in payload
+    thinking_value = payload.get("thinking")
+    thinking_summary = None
+    if thinking_present:
+        if isinstance(thinking_value, dict):
+            thinking_summary = {
+                "type": thinking_value.get("type"),
+                "budget_tokens": thinking_value.get("budget_tokens"),
+            }
+        else:
+            thinking_summary = thinking_value
+
+    if not model or max_tokens is None or not isinstance(messages, list):
+        return _anthropic_error(
+            status_code=400,
+            message="缺少必填字段：model / max_tokens / messages",
+            error_type="invalid_request_error",
+        )
+
+    try:
+        client_host = request.client.host if request.client else "unknown"
+        client_port = request.client.port if request.client else "unknown"
+    except Exception:
+        client_host = "unknown"
+        client_port = "unknown"
+
+    user_agent = request.headers.get("user-agent", "")
+    log.info(
+        f"[ANTHROPIC] /messages 收到请求: client={client_host}:{client_port}, model={model}, "
+        f"stream={stream}, messages={len(messages)}, thinking_present={thinking_present}, "
+        f"thinking={thinking_summary}, ua={user_agent}"
+    )
+
+    if len(messages) == 1 and messages[0].get("role") == "user" and messages[0].get("content") == "Hi":
+        return JSONResponse(
+            content={
+                "id": f"msg_{uuid.uuid4().hex}",
+                "type": "message",
+                "role": "assistant",
+                "model": str(model),
+                "content": [{"type": "text", "text": "antigravity Anthropic Messages 正常工作中"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            }
+        )
+
+    from src.credential_manager import get_credential_manager
+
+    cred_mgr = await get_credential_manager()
+    cred_result = await cred_mgr.get_valid_credential(is_antigravity=True)
+    if not cred_result:
+        return _anthropic_error(status_code=500, message="当前无可用 antigravity 凭证")
+
+    _, credential_data = cred_result
+    project_id, session_id = _infer_project_and_session(credential_data)
+
+    try:
+        components = convert_anthropic_request_to_antigravity_components(payload)
+    except Exception as e:
+        log.error(f"[ANTHROPIC] 请求转换失败: {e}")
+        return _anthropic_error(
+            status_code=400, message="请求转换失败", error_type="invalid_request_error"
+        )
+
+    log.info(f"[ANTHROPIC] /messages 模型映射: upstream={model} -> downstream={components['model']}")
+
+    # 下游要求每条 text 内容块必须包含“非空白”文本；上游客户端偶尔会追加空白 text block（例如图片后跟一个空字符串），
+    # 经过转换过滤后可能导致 contents 为空，此时应在本地直接返回 400，避免把无效请求打到下游。
+    if not (components.get("contents") or []):
+        return _anthropic_error(
+            status_code=400,
+            message="messages 不能为空；text 内容块必须包含非空白文本",
+            error_type="invalid_request_error",
+        )
+
+    # 简单估算 token
+    estimated_tokens = 0
+    try:
+        estimated_tokens = estimate_input_tokens(payload)
+    except Exception as e:
+        log.debug(f"[ANTHROPIC] token 估算失败: {e}")
+
+    request_body = build_antigravity_request_body(
+        contents=components["contents"],
+        model=components["model"],
+        project_id=project_id,
+        session_id=session_id,
+        system_instruction=components["system_instruction"],
+        tools=components["tools"],
+        generation_config=components["generation_config"],
+    )
+    _debug_log_downstream_request_body(request_body)
+
+    if stream:
+        message_id = f"msg_{uuid.uuid4().hex}"
+
+        # 流式请求 - Router 层控制降级，API 层不做跨池降级（避免双重循环浪费 token）
+        current_model = components["model"]
+        last_error = None
+        cred_name = None
+
+        # 使用新的跨池降级逻辑
+        fallback_models = _get_fallback_models(current_model)
+        models_to_try = [current_model] + fallback_models
+
+        for attempt_idx, attempt_model in enumerate(models_to_try):
+            try:
+                if attempt_model != current_model:
+                    log.warning(f"[ANTHROPIC] 模型降级: {current_model} -> {attempt_model}")
+                    request_body["model"] = attempt_model
+
+                # ⚠️ 关键修复：禁用 API 层的跨池降级，避免双重循环浪费 token
+                resources, cred_name, _ = await send_antigravity_request_stream(request_body, cred_mgr, enable_cross_pool_fallback=False)
+                response, stream_ctx, client = resources
+                break  # 成功则跳出循环
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                log.error(f"[ANTHROPIC] 下游流式请求失败 (model={attempt_model}): {error_msg}")
+
+                # 1. 403 错误 - 需要验证凭证，直接返回
+                if is_403_error(error_msg):
+                    log.warning(f"[ANTHROPIC FALLBACK] 检测到 403 错误，需要验证凭证")
+                    return _anthropic_error(status_code=403, message="Credential verification required", error_type="authentication_error")
+
+                # 2. 400 错误 - 客户端参数错误，不重试不降级
+                if "(400)" in error_msg:
+                    # 2.1 Thinking 格式错误 - 清理 thinking blocks 后重试一次
+                    if _is_thinking_format_error(error_msg):
+                        log.warning(f"[ANTHROPIC] 检测到 thinking 格式错误，尝试清理 thinking blocks 后重试")
+                        try:
+                            cleaned_payload = _strip_thinking_from_payload(payload)
+                            cleaned_components = convert_anthropic_request_to_antigravity_components(cleaned_payload)
+                            cleaned_request_body = build_antigravity_request_body(
+                                contents=cleaned_components["contents"],
+                                model=cleaned_components["model"],
+                                project_id=project_id,
+                                session_id=session_id,
+                                system_instruction=cleaned_components["system_instruction"],
+                                tools=cleaned_components["tools"],
+                                generation_config=cleaned_components["generation_config"],
+                            )
+                            log.info("[ANTHROPIC] 已清理 thinking blocks，正在重试流式请求...")
+                            resources, cred_name, _ = await send_antigravity_request_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=False)
+                            response, stream_ctx, client = resources
+                            break  # 成功则跳出循环
+                        except Exception as retry_e:
+                            log.error(f"[ANTHROPIC] 清理 thinking 后重试仍然失败: {retry_e}")
+                            return _anthropic_error(status_code=400, message=f"Thinking format error: {error_msg[:200]}", error_type="invalid_request_error")
+                    # 2.2 其他 400 错误 - 直接返回，不重试不降级（避免浪费 token）
+                    else:
+                        log.warning(f"[ANTHROPIC] 400 客户端错误，不重试不降级")
+                        return _anthropic_error(status_code=400, message=f"Client error: {error_msg[:200]}", error_type="invalid_request_error")
+
+                # 3. 额度用尽错误 - 触发跨池降级
+                if is_quota_exhausted_error(error_msg):
+                    log.warning(f"[ANTHROPIC FALLBACK] 检测到额度用尽错误")
+                    if attempt_idx < len(models_to_try) - 1:
+                        log.warning(f"[ANTHROPIC FALLBACK] 将尝试下一个降级模型")
+                        continue
+                    else:
+                        log.error(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试")
+                        return _anthropic_error(status_code=429, message="All quota pools exhausted", error_type="rate_limit_error")
+
+                # 4. 凭证不可用错误 - 触发跨池降级（与额度用尽相同处理）
+                if is_credential_unavailable_error(error_msg):
+                    log.warning(f"[ANTHROPIC FALLBACK] 检测到凭证不可用错误")
+                    if attempt_idx < len(models_to_try) - 1:
+                        log.warning(f"[ANTHROPIC FALLBACK] 将尝试下一个降级模型")
+                        continue
+                    else:
+                        log.error(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试")
+                        return _anthropic_error(status_code=503, message="All credentials unavailable", error_type="api_error")
+
+                # 5. 5xx 错误 - 服务端临时问题，直接返回（API 层已经重试过了）
+                if is_retryable_error(error_msg):
+                    log.info(f"[ANTHROPIC] 服务端错误，API 层已重试，直接返回")
+                    return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
+
+                # 6. 其他错误 - 直接返回
+                return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
+        else:
+            # 所有模型都失败
+            log.error(f"[ANTHROPIC] 所有降级模型均失败: {last_error}")
+            return _anthropic_error(status_code=500, message="下游请求失败（已尝试所有降级模型）", error_type="api_error")
+
+        async def stream_generator():
+            try:
+                # response 现在是 filtered_lines 生成器，直接使用
+                async for chunk in antigravity_sse_to_anthropic_sse(
+                    response,
+                    model=str(model),
+                    message_id=message_id,
+                    initial_input_tokens=estimated_tokens,
+                    credential_manager=cred_mgr,
+                    credential_name=cred_name,
+                ):
+                    yield chunk
+            finally:
+                try:
+                    await stream_ctx.__aexit__(None, None, None)
+                except Exception as e:
+                    log.debug(f"[ANTHROPIC] 关闭 stream_ctx 失败: {e}")
+                try:
+                    await client.aclose()
+                except Exception as e:
+                    log.debug(f"[ANTHROPIC] 关闭 client 失败: {e}")
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    request_id = f"msg_{int(time.time() * 1000)}"
+
+    # 带降级的非流式请求
+    current_model = components["model"]
+    last_error = None
+    response_data = None
+
+    # 使用新的跨池降级逻辑
+    fallback_models = _get_fallback_models(current_model)
+    models_to_try = [current_model] + fallback_models
+
+    for attempt_idx, attempt_model in enumerate(models_to_try):
+        try:
+            if attempt_model != current_model:
+                log.warning(f"[ANTHROPIC] 模型降级: {current_model} -> {attempt_model}")
+                request_body["model"] = attempt_model
+
+            # ⚠️ 关键修复：禁用 API 层的跨池降级，避免双重循环浪费 token
+            response_data, _, _ = await send_antigravity_request_no_stream(request_body, cred_mgr, enable_cross_pool_fallback=False)
+            break  # 成功则跳出循环
+        except Exception as e:
+            last_error = e
+            error_msg = str(e)
+            log.error(f"[ANTHROPIC] 下游非流式请求失败 (model={attempt_model}): {error_msg}")
+
+            # 1. 403 错误 - 需要验证凭证，直接返回
+            if is_403_error(error_msg):
+                log.warning(f"[ANTHROPIC FALLBACK] 检测到 403 错误，需要验证凭证")
+                return _anthropic_error(status_code=403, message="Credential verification required", error_type="authentication_error")
+
+            # 2. 400 错误 - 客户端参数错误，不重试不降级
+            if "(400)" in error_msg:
+                # 2.1 Thinking 格式错误 - 清理 thinking blocks 后重试一次
+                if _is_thinking_format_error(error_msg):
+                    log.warning(f"[ANTHROPIC] 检测到 thinking 格式错误，尝试清理 thinking blocks 后重试")
+                    try:
+                        cleaned_payload = _strip_thinking_from_payload(payload)
+                        cleaned_components = convert_anthropic_request_to_antigravity_components(cleaned_payload)
+                        cleaned_request_body = build_antigravity_request_body(
+                            contents=cleaned_components["contents"],
+                            model=cleaned_components["model"],
+                            project_id=project_id,
+                            session_id=session_id,
+                            system_instruction=cleaned_components["system_instruction"],
+                            tools=cleaned_components["tools"],
+                            generation_config=cleaned_components["generation_config"],
+                        )
+                        log.info("[ANTHROPIC] 已清理 thinking blocks，正在重试非流式请求...")
+                        # ⚠️ 关键修复：禁用 API 层的跨池降级
+                        response_data, _, _ = await send_antigravity_request_no_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=False)
+                        break  # 成功则跳出循环
+                    except Exception as retry_e:
+                        log.error(f"[ANTHROPIC] 清理 thinking 后重试仍然失败: {retry_e}")
+                        return _anthropic_error(status_code=400, message=f"Thinking format error: {error_msg[:200]}", error_type="invalid_request_error")
+                # 2.2 其他 400 错误 - 直接返回，不重试不降级（避免浪费 token）
+                else:
+                    log.warning(f"[ANTHROPIC] 400 客户端错误，不重试不降级")
+                    return _anthropic_error(status_code=400, message=f"Client error: {error_msg[:200]}", error_type="invalid_request_error")
+
+            # 3. 5xx 错误 - 服务端临时问题，直接返回（API 层已经重试过了）
+            if is_retryable_error(error_msg):
+                log.info(f"[ANTHROPIC] 服务端错误，API 层已重试，直接返回")
+                return _anthropic_error(status_code=500, message="下游请求失败 (retryable)", error_type="api_error")
+
+            # 4. 额度用尽错误 - 触发跨池降级
+            if is_quota_exhausted_error(error_msg):
+                log.warning(f"[ANTHROPIC FALLBACK] 检测到额度用尽错误")
+                if attempt_idx < len(models_to_try) - 1:
+                    log.warning(f"[ANTHROPIC FALLBACK] 将尝试下一个降级模型")
+                    continue
+                else:
+                    log.error(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试")
+                    return _anthropic_error(status_code=429, message="All quota pools exhausted", error_type="rate_limit_error")
+
+            # 5. 凭证不可用错误 - 触发跨池降级（与额度用尽相同处理）
+            if is_credential_unavailable_error(error_msg):
+                log.warning(f"[ANTHROPIC FALLBACK] 检测到凭证不可用错误")
+                if attempt_idx < len(models_to_try) - 1:
+                    log.warning(f"[ANTHROPIC FALLBACK] 将尝试下一个降级模型")
+                    continue
+                else:
+                    log.error(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试")
+                    return _anthropic_error(status_code=503, message="All credentials unavailable", error_type="api_error")
+
+            # 6. 其他错误 - 直接返回
+            return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
+    else:
+        # 所有模型都失败
+        log.error(f"[ANTHROPIC] 所有降级模型均失败: {last_error}")
+        return _anthropic_error(status_code=500, message="下游请求失败（已尝试所有降级模型）", error_type="api_error")
+
+    anthropic_response = _convert_antigravity_response_to_anthropic_message(
+        response_data,
+        model=str(model),
+        message_id=request_id,
+        fallback_input_tokens=estimated_tokens,
+    )
+    return JSONResponse(content=anthropic_response)
+
+
+@router.post("/antigravity/v1/messages/count_tokens")
+async def anthropic_messages_count_tokens(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    """
+    Anthropic Messages API 兼容的 token 计数端点（用于 claude-cli 等客户端预检）。
+
+    返回结构尽量贴近 Anthropic：`{"input_tokens": <int>}`。
+    """
+    from config import get_api_password
+
+    password = await get_api_password()
+    token = _extract_api_token(request, credentials)
+    if token != password:
+        return _anthropic_error(status_code=403, message="密码错误", error_type="authentication_error")
+
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return _anthropic_error(
+            status_code=400, message=f"JSON 解析失败: {str(e)}", error_type="invalid_request_error"
+        )
+
+    if not isinstance(payload, dict):
+        return _anthropic_error(
+            status_code=400, message="请求体必须为 JSON object", error_type="invalid_request_error"
+        )
+
+    _debug_log_request_payload(request, payload)
+
+    if not payload.get("model") or not isinstance(payload.get("messages"), list):
+        return _anthropic_error(
+            status_code=400,
+            message="缺少必填字段：model / messages",
+            error_type="invalid_request_error",
+        )
+
+    try:
+        client_host = request.client.host if request.client else "unknown"
+        client_port = request.client.port if request.client else "unknown"
+    except Exception:
+        client_host = "unknown"
+        client_port = "unknown"
+
+    thinking_present = "thinking" in payload
+    thinking_value = payload.get("thinking")
+    thinking_summary = None
+    if thinking_present:
+        if isinstance(thinking_value, dict):
+            thinking_summary = {
+                "type": thinking_value.get("type"),
+                "budget_tokens": thinking_value.get("budget_tokens"),
+            }
+        else:
+            thinking_summary = thinking_value
+
+    user_agent = request.headers.get("user-agent", "")
+    log.info(
+        f"[ANTHROPIC] /messages/count_tokens 收到请求: client={client_host}:{client_port}, "
+        f"model={payload.get('model')}, messages={len(payload.get('messages') or [])}, "
+        f"thinking_present={thinking_present}, thinking={thinking_summary}, ua={user_agent}"
+    )
+
+    # 简单估算
+    input_tokens = 0
+    try:
+        input_tokens = estimate_input_tokens(payload)
+    except Exception as e:
+        log.error(f"[ANTHROPIC] token 估算失败: {e}")
+
+    return JSONResponse(content={"input_tokens": input_tokens})

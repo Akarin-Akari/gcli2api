@@ -1,0 +1,507 @@
+{"timestamp": "2026-01-06T16:56:40.524935", "level": "PERF", "message": "percentile_test completed in 2.05ms", "operation": "percentile_test", "duration_ms": 2.05, "request_id": "cdc6400d"}
+{"timestamp": "2026-01-06T16:56:40.533732", "level": "PERF", "message": "percentile_test completed in 1.51ms", "operation": "percentile_test", "duration_ms": 1.51, "request_id": "8c03250b"}
+{"timestamp": "2026-01-06T16:56:40.542353", "level": "PERF", "message": "percentile_test completed in 1.39ms", "operation": "percentile_test", "duration_ms": 1.39, "request_id": "0422a5bc"}
+{"timestamp": "2026-01-06T16:56:40.549969", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "afada8b7"}
+{"timestamp": "2026-01-06T16:56:40.555236", "level": "PERF", "message": "percentile_test completed in 1.56ms", "operation": "percentile_test", "duration_ms": 1.56, "request_id": "b6ed11c7"}
+{"timestamp": "2026-01-06T16:56:40.562276", "level": "PERF", "message": "percentile_test completed in 1.12ms", "operation": "percentile_test", "duration_ms": 1.12, "request_id": "0e26dc78"}
+{"timestamp": "2026-01-06T16:56:40.566812", "level": "PERF", "message": "percentile_test completed in 1.48ms", "operation": "percentile_test", "duration_ms": 1.48, "request_id": "97bbc1d9"}
+{"timestamp": "2026-01-06T16:56:40.573701", "level": "PERF", "message": "percentile_test completed in 1.45ms", "operation": "percentile_test", "duration_ms": 1.45, "request_id": "126e1d62"}
+{"timestamp": "2026-01-06T16:56:40.578543", "level": "PERF", "message": "percentile_test completed in 1.22ms", "operation": "percentile_test", "duration_ms": 1.22, "request_id": "0cd490e0"}
+{"timestamp": "2026-01-06T16:56:40.585049", "level": "PERF", "message": "percentile_test completed in 1.64ms", "operation": "percentile_test", "duration_ms": 1.64, "request_id": "c3366a2a"}
+{"timestamp": "2026-01-06T16:56:40.589928", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "bbfd6001"}
+{"timestamp": "2026-01-06T16:56:40.594650", "level": "PERF", "message": "percentile_test completed in 1.49ms", "operation": "percentile_test", "duration_ms": 1.49, "request_id": "9b3f5d6f"}
+{"timestamp": "2026-01-06T16:56:40.599330", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "0afa221a"}
+{"timestamp": "2026-01-06T16:56:40.604428", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "7f2bd168"}
+{"timestamp": "2026-01-06T16:56:40.610286", "level": "PERF", "message": "percentile_test completed in 1.85ms", "operation": "percentile_test", "duration_ms": 1.85, "request_id": "bab07788"}
+{"timestamp": "2026-01-06T16:56:40.615145", "level": "PERF", "message": "percentile_test completed in 1.54ms", "operation": "percentile_test", "duration_ms": 1.54, "request_id": "c3360ea1"}
+{"timestamp": "2026-01-06T16:56:40.618884", "level": "PERF", "message": "percentile_test completed in 1.18ms", "operation": "percentile_test", "duration_ms": 1.18, "request_id": "e4217347"}
+{"timestamp": "2026-01-06T16:56:40.624912", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "003e0386"}
+{"timestamp": "2026-01-06T16:56:40.630504", "level": "PERF", "message": "percentile_test completed in 1.56ms", "operation": "percentile_test", "duration_ms": 1.56, "request_id": "2cb1e1f0"}
+{"timestamp": "2026-01-06T16:56:40.637267", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "93ae5562"}
+{"timestamp": "2026-01-06T16:56:40.646757", "level": "PERF", "message": "percentile_test completed in 2.02ms", "operation": "percentile_test", "duration_ms": 2.02, "request_id": "829e1f58"}
+{"timestamp": "2026-01-06T16:56:40.654789", "level": "PERF", "message": "percentile_test completed in 1.47ms", "operation": "percentile_test", "duration_ms": 1.47, "request_id": "ade46df0"}
+{"timestamp": "2026-01-06T16:56:40.662371", "level": "PERF", "message": "percentile_test completed in 1.53ms", "operation": "percentile_test", "duration_ms": 1.53, "request_id": "23074662"}
+{"timestamp": "2026-01-06T16:56:40.669578", "level": "PERF", "message": "percentile_test completed in 1.36ms", "operation": "percentile_test", "duration_ms": 1.36, "request_id": "7d09ad81"}
+{"timestamp": "2026-01-06T16:56:40.676517", "level": "PERF", "message": "percentile_test completed in 1.56ms", "operation": "percentile_test", "duration_ms": 1.56, "request_id": "5f21c9b8"}
+{"timestamp": "2026-01-06T16:56:40.681323", "level": "PERF", "message": "percentile_test completed in 1.31ms", "operation": "percentile_test", "duration_ms": 1.31, "request_id": "e9df0533"}
+{"timestamp": "2026-01-06T16:56:40.686243", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "b92b843e"}
+{"timestamp": "2026-01-06T16:56:40.691230", "level": "PERF", "message": "percentile_test completed in 1.28ms", "operation": "percentile_test", "duration_ms": 1.28, "request_id": "31f0d896"}
+{"timestamp": "2026-01-06T16:56:40.696575", "level": "PERF", "message": "percentile_test completed in 1.50ms", "operation": "percentile_test", "duration_ms": 1.5, "request_id": "85d894ba"}
+{"timestamp": "2026-01-06T16:56:40.701781", "level": "PERF", "message": "percentile_test completed in 1.42ms", "operation": "percentile_test", "duration_ms": 1.42, "request_id": "4c301bc0"}
+{"timestamp": "2026-01-06T16:56:40.706818", "level": "PERF", "message": "percentile_test completed in 1.42ms", "operation": "percentile_test", "duration_ms": 1.42, "request_id": "638b3394"}
+{"timestamp": "2026-01-06T16:56:40.711541", "level": "PERF", "message": "percentile_test completed in 1.39ms", "operation": "percentile_test", "duration_ms": 1.39, "request_id": "861d0801"}
+{"timestamp": "2026-01-06T16:56:40.715289", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "acab07e3"}
+{"timestamp": "2026-01-06T16:56:40.719275", "level": "PERF", "message": "percentile_test completed in 1.27ms", "operation": "percentile_test", "duration_ms": 1.27, "request_id": "ed1ff695"}
+{"timestamp": "2026-01-06T16:56:40.724396", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "fcec175e"}
+{"timestamp": "2026-01-06T16:56:40.728423", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "2151b66c"}
+{"timestamp": "2026-01-06T16:56:40.733705", "level": "PERF", "message": "percentile_test completed in 1.35ms", "operation": "percentile_test", "duration_ms": 1.35, "request_id": "f64f28b2"}
+{"timestamp": "2026-01-06T16:56:40.738253", "level": "PERF", "message": "percentile_test completed in 1.56ms", "operation": "percentile_test", "duration_ms": 1.56, "request_id": "4601c412"}
+{"timestamp": "2026-01-06T16:56:40.742680", "level": "PERF", "message": "percentile_test completed in 1.55ms", "operation": "percentile_test", "duration_ms": 1.55, "request_id": "e502cba2"}
+{"timestamp": "2026-01-06T16:56:40.747053", "level": "PERF", "message": "percentile_test completed in 1.39ms", "operation": "percentile_test", "duration_ms": 1.39, "request_id": "ee888ec5"}
+{"timestamp": "2026-01-06T16:56:40.750798", "level": "PERF", "message": "percentile_test completed in 1.14ms", "operation": "percentile_test", "duration_ms": 1.14, "request_id": "6703d974"}
+{"timestamp": "2026-01-06T16:56:40.754976", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "e68d72ed"}
+{"timestamp": "2026-01-06T16:56:40.758943", "level": "PERF", "message": "percentile_test completed in 1.19ms", "operation": "percentile_test", "duration_ms": 1.19, "request_id": "607c97ac"}
+{"timestamp": "2026-01-06T16:56:40.762425", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "8c89a7b0"}
+{"timestamp": "2026-01-06T16:56:40.766733", "level": "PERF", "message": "percentile_test completed in 1.67ms", "operation": "percentile_test", "duration_ms": 1.67, "request_id": "c274c625"}
+{"timestamp": "2026-01-06T16:56:40.770806", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "71db655e"}
+{"timestamp": "2026-01-06T16:56:40.775069", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "a945da69"}
+{"timestamp": "2026-01-06T16:56:40.779486", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "89b7a60a"}
+{"timestamp": "2026-01-06T16:56:40.784112", "level": "PERF", "message": "percentile_test completed in 1.56ms", "operation": "percentile_test", "duration_ms": 1.56, "request_id": "52c6a3b1"}
+{"timestamp": "2026-01-06T16:56:40.788121", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "36bc8e5b"}
+{"timestamp": "2026-01-06T16:56:40.792196", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "01d01c1f"}
+{"timestamp": "2026-01-06T16:56:40.797588", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "cd37da9a"}
+{"timestamp": "2026-01-06T16:56:40.801621", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "2dcdcf1a"}
+{"timestamp": "2026-01-06T16:56:40.806115", "level": "PERF", "message": "percentile_test completed in 1.38ms", "operation": "percentile_test", "duration_ms": 1.38, "request_id": "870d4f03"}
+{"timestamp": "2026-01-06T16:56:40.809650", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "e15c0347"}
+{"timestamp": "2026-01-06T16:56:40.814077", "level": "PERF", "message": "percentile_test completed in 1.56ms", "operation": "percentile_test", "duration_ms": 1.56, "request_id": "023891fc"}
+{"timestamp": "2026-01-06T16:56:40.819565", "level": "PERF", "message": "percentile_test completed in 1.50ms", "operation": "percentile_test", "duration_ms": 1.5, "request_id": "ca65579a"}
+{"timestamp": "2026-01-06T16:56:40.823530", "level": "PERF", "message": "percentile_test completed in 1.25ms", "operation": "percentile_test", "duration_ms": 1.25, "request_id": "fe3220ea"}
+{"timestamp": "2026-01-06T16:56:40.829102", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "bd49eb51"}
+{"timestamp": "2026-01-06T16:56:40.835864", "level": "PERF", "message": "percentile_test completed in 2.07ms", "operation": "percentile_test", "duration_ms": 2.07, "request_id": "18137aa3"}
+{"timestamp": "2026-01-06T16:56:40.840480", "level": "PERF", "message": "percentile_test completed in 1.36ms", "operation": "percentile_test", "duration_ms": 1.36, "request_id": "ba24fae2"}
+{"timestamp": "2026-01-06T16:56:40.846807", "level": "PERF", "message": "percentile_test completed in 1.41ms", "operation": "percentile_test", "duration_ms": 1.41, "request_id": "dca56bd5"}
+{"timestamp": "2026-01-06T16:56:40.851744", "level": "PERF", "message": "percentile_test completed in 1.06ms", "operation": "percentile_test", "duration_ms": 1.06, "request_id": "02bed68b"}
+{"timestamp": "2026-01-06T16:56:40.858386", "level": "PERF", "message": "percentile_test completed in 1.98ms", "operation": "percentile_test", "duration_ms": 1.98, "request_id": "a62a3243"}
+{"timestamp": "2026-01-06T16:56:40.866123", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "4be539d2"}
+{"timestamp": "2026-01-06T16:56:40.871589", "level": "PERF", "message": "percentile_test completed in 1.34ms", "operation": "percentile_test", "duration_ms": 1.34, "request_id": "9795d31a"}
+{"timestamp": "2026-01-06T16:56:40.878364", "level": "PERF", "message": "percentile_test completed in 1.12ms", "operation": "percentile_test", "duration_ms": 1.12, "request_id": "73cd0732"}
+{"timestamp": "2026-01-06T16:56:40.882424", "level": "PERF", "message": "percentile_test completed in 1.18ms", "operation": "percentile_test", "duration_ms": 1.18, "request_id": "18d60455"}
+{"timestamp": "2026-01-06T16:56:40.890171", "level": "PERF", "message": "percentile_test completed in 1.46ms", "operation": "percentile_test", "duration_ms": 1.46, "request_id": "6c10c365"}
+{"timestamp": "2026-01-06T16:56:40.896485", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "6ef503a0"}
+{"timestamp": "2026-01-06T16:56:40.903618", "level": "PERF", "message": "percentile_test completed in 1.38ms", "operation": "percentile_test", "duration_ms": 1.38, "request_id": "f68d27aa"}
+{"timestamp": "2026-01-06T16:56:40.911189", "level": "PERF", "message": "percentile_test completed in 1.18ms", "operation": "percentile_test", "duration_ms": 1.18, "request_id": "4156cdea"}
+{"timestamp": "2026-01-06T16:56:40.917350", "level": "PERF", "message": "percentile_test completed in 1.56ms", "operation": "percentile_test", "duration_ms": 1.56, "request_id": "7454f7e2"}
+{"timestamp": "2026-01-06T16:56:40.922974", "level": "PERF", "message": "percentile_test completed in 1.22ms", "operation": "percentile_test", "duration_ms": 1.22, "request_id": "9ecd98b4"}
+{"timestamp": "2026-01-06T16:56:40.928081", "level": "PERF", "message": "percentile_test completed in 1.06ms", "operation": "percentile_test", "duration_ms": 1.06, "request_id": "3913021e"}
+{"timestamp": "2026-01-06T16:56:40.932830", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "37723cb6"}
+{"timestamp": "2026-01-06T16:56:40.941717", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "e1bd52d7"}
+{"timestamp": "2026-01-06T16:56:40.946845", "level": "PERF", "message": "percentile_test completed in 1.27ms", "operation": "percentile_test", "duration_ms": 1.27, "request_id": "3de88a20"}
+{"timestamp": "2026-01-06T16:56:40.952789", "level": "PERF", "message": "percentile_test completed in 1.50ms", "operation": "percentile_test", "duration_ms": 1.5, "request_id": "f7afc51a"}
+{"timestamp": "2026-01-06T16:56:40.959103", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "536daf0b"}
+{"timestamp": "2026-01-06T16:56:40.964531", "level": "PERF", "message": "percentile_test completed in 1.16ms", "operation": "percentile_test", "duration_ms": 1.16, "request_id": "7b5306c2"}
+{"timestamp": "2026-01-06T16:56:40.970616", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "de44cea9"}
+{"timestamp": "2026-01-06T16:56:40.976539", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "ed2ed1af"}
+{"timestamp": "2026-01-06T16:56:40.982328", "level": "PERF", "message": "percentile_test completed in 1.76ms", "operation": "percentile_test", "duration_ms": 1.76, "request_id": "44769d32"}
+{"timestamp": "2026-01-06T16:56:40.987479", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "1facdc64"}
+{"timestamp": "2026-01-06T16:56:40.994931", "level": "PERF", "message": "percentile_test completed in 1.29ms", "operation": "percentile_test", "duration_ms": 1.29, "request_id": "d8372a50"}
+{"timestamp": "2026-01-06T16:56:41.001086", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "e664f0a6"}
+{"timestamp": "2026-01-06T16:56:41.007699", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "e085473f"}
+{"timestamp": "2026-01-06T16:56:41.013216", "level": "PERF", "message": "percentile_test completed in 1.19ms", "operation": "percentile_test", "duration_ms": 1.19, "request_id": "945099fb"}
+{"timestamp": "2026-01-06T16:56:41.018269", "level": "PERF", "message": "percentile_test completed in 1.55ms", "operation": "percentile_test", "duration_ms": 1.55, "request_id": "746050ff"}
+{"timestamp": "2026-01-06T16:56:41.023115", "level": "PERF", "message": "percentile_test completed in 1.17ms", "operation": "percentile_test", "duration_ms": 1.17, "request_id": "ceef01b9"}
+{"timestamp": "2026-01-06T16:56:41.028566", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "3b9e9d5f"}
+{"timestamp": "2026-01-06T16:56:41.034501", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "9527935b"}
+{"timestamp": "2026-01-06T16:56:41.039356", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "745c705a"}
+{"timestamp": "2026-01-06T16:56:41.044090", "level": "PERF", "message": "percentile_test completed in 1.65ms", "operation": "percentile_test", "duration_ms": 1.65, "request_id": "ee9515d4"}
+{"timestamp": "2026-01-06T16:56:41.048483", "level": "PERF", "message": "percentile_test completed in 1.33ms", "operation": "percentile_test", "duration_ms": 1.33, "request_id": "f0cd9706"}
+{"timestamp": "2026-01-06T16:56:41.052724", "level": "PERF", "message": "percentile_test completed in 1.26ms", "operation": "percentile_test", "duration_ms": 1.26, "request_id": "74859834"}
+{"timestamp": "2026-01-06T16:56:41.057110", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "abc9947a"}
+{"timestamp": "2026-01-06T16:56:41.062988", "level": "PERF", "message": "percentile_test completed in 1.33ms", "operation": "percentile_test", "duration_ms": 1.33, "request_id": "cca4a360"}
+{"timestamp": "2026-01-06T16:56:41.067876", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "abc56275"}
+{"timestamp": "2026-01-06T16:56:41.107870", "level": "PERF", "message": "temp_operation completed in 0.03ms", "operation": "temp_operation", "duration_ms": 0.03, "request_id": "cf39571d"}
+{"timestamp": "2026-01-06T16:56:41.112590", "level": "PERF", "message": "another_op completed in 0.04ms", "operation": "another_op", "duration_ms": 0.04, "request_id": "f5f57faa"}
+{"timestamp": "2026-01-06T16:56:41.126741", "level": "PERF", "message": "operation_a completed in 10.43ms", "operation": "operation_a", "duration_ms": 10.43, "request_id": "d01f3261"}
+{"timestamp": "2026-01-06T16:56:41.152092", "level": "PERF", "message": "operation_b completed in 20.44ms", "operation": "operation_b", "duration_ms": 20.44, "request_id": "49fae14f"}
+{"timestamp": "2026-01-06T16:56:41.168879", "level": "PERF", "message": "repeated_operation completed in 10.32ms", "operation": "repeated_operation", "duration_ms": 10.32, "request_id": "e5cb1288"}
+{"timestamp": "2026-01-06T16:56:41.184105", "level": "PERF", "message": "repeated_operation completed in 10.16ms", "operation": "repeated_operation", "duration_ms": 10.16, "request_id": "c7e32509"}
+{"timestamp": "2026-01-06T16:56:41.199587", "level": "PERF", "message": "repeated_operation completed in 10.52ms", "operation": "repeated_operation", "duration_ms": 10.52, "request_id": "8cc82018"}
+{"timestamp": "2026-01-06T16:56:41.214212", "level": "PERF", "message": "repeated_operation completed in 10.13ms", "operation": "repeated_operation", "duration_ms": 10.13, "request_id": "d2dcba65"}
+{"timestamp": "2026-01-06T16:56:41.229900", "level": "PERF", "message": "repeated_operation completed in 10.41ms", "operation": "repeated_operation", "duration_ms": 10.41, "request_id": "44fcbae8"}
+{"timestamp": "2026-01-06T16:56:41.311979", "level": "PERF", "message": "async_function completed in 61.78ms", "operation": "async_function", "duration_ms": 61.78, "function": "async_slow_function"}
+{"timestamp": "2026-01-06T16:56:41.370346", "level": "PERF", "message": "sync_function completed in 50.46ms", "operation": "sync_function", "duration_ms": 50.46, "function": "slow_function"}
+{"timestamp": "2026-01-06T16:56:41.476553", "level": "PERF", "message": "test_operation completed in 100.53ms", "tag": "TEST", "operation": "test_operation", "duration_ms": 100.53, "request_id": "df661104"}
+{"timestamp": "2026-01-06T16:56:41.501617", "level": "INFO", "message": "Info message"}
+{"timestamp": "2026-01-06T16:56:41.505660", "level": "WARNING", "message": "Warning message"}
+{"timestamp": "2026-01-06T16:56:41.509008", "level": "SUCCESS", "message": "Success message"}
+{"timestamp": "2026-01-06T16:56:41.513332", "level": "ROUTE", "message": "Route message"}
+{"timestamp": "2026-01-06T16:56:41.517361", "level": "FALLBACK", "message": "Fallback message"}
+{"timestamp": "2026-01-06T16:56:41.520648", "level": "PERF", "message": "Performance message"}
+{"timestamp": "2026-01-06T16:56:41.525222", "level": "INFO", "message": "Request processed", "tag": "API", "request_id": "req_123", "duration_ms": 150.5, "status_code": 200}
+{"timestamp": "2026-01-06T16:56:41.529755", "level": "WARNING", "message": "Rate limit approaching", "tag": "RATE_LIMIT", "current_rate": 95, "max_rate": 100}
+{"timestamp": "2026-01-06T16:58:22.763364", "level": "PERF", "message": "percentile_test completed in 1.32ms", "operation": "percentile_test", "duration_ms": 1.32, "request_id": "ece46276"}
+{"timestamp": "2026-01-06T16:58:22.769230", "level": "PERF", "message": "percentile_test completed in 1.17ms", "operation": "percentile_test", "duration_ms": 1.17, "request_id": "c66fa895"}
+{"timestamp": "2026-01-06T16:58:22.776349", "level": "PERF", "message": "percentile_test completed in 1.12ms", "operation": "percentile_test", "duration_ms": 1.12, "request_id": "3e5b6b11"}
+{"timestamp": "2026-01-06T16:58:22.785528", "level": "PERF", "message": "percentile_test completed in 1.46ms", "operation": "percentile_test", "duration_ms": 1.46, "request_id": "c2f92d16"}
+{"timestamp": "2026-01-06T16:58:22.794806", "level": "PERF", "message": "percentile_test completed in 1.68ms", "operation": "percentile_test", "duration_ms": 1.68, "request_id": "07dfbd68"}
+{"timestamp": "2026-01-06T16:58:22.805617", "level": "PERF", "message": "percentile_test completed in 1.34ms", "operation": "percentile_test", "duration_ms": 1.34, "request_id": "9c24f26b"}
+{"timestamp": "2026-01-06T16:58:22.813647", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "b731e12a"}
+{"timestamp": "2026-01-06T16:58:22.823330", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "f92ae50e"}
+{"timestamp": "2026-01-06T16:58:22.830698", "level": "PERF", "message": "percentile_test completed in 1.46ms", "operation": "percentile_test", "duration_ms": 1.46, "request_id": "370cd586"}
+{"timestamp": "2026-01-06T16:58:22.840457", "level": "PERF", "message": "percentile_test completed in 1.66ms", "operation": "percentile_test", "duration_ms": 1.66, "request_id": "ef2c993e"}
+{"timestamp": "2026-01-06T16:58:22.848012", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "ff5cf2e2"}
+{"timestamp": "2026-01-06T16:58:22.857007", "level": "PERF", "message": "percentile_test completed in 1.85ms", "operation": "percentile_test", "duration_ms": 1.85, "request_id": "e7afa562"}
+{"timestamp": "2026-01-06T16:58:22.866913", "level": "PERF", "message": "percentile_test completed in 1.64ms", "operation": "percentile_test", "duration_ms": 1.64, "request_id": "f68faaae"}
+{"timestamp": "2026-01-06T16:58:22.877676", "level": "PERF", "message": "percentile_test completed in 1.19ms", "operation": "percentile_test", "duration_ms": 1.19, "request_id": "84fa6e7d"}
+{"timestamp": "2026-01-06T16:58:22.888186", "level": "PERF", "message": "percentile_test completed in 1.26ms", "operation": "percentile_test", "duration_ms": 1.26, "request_id": "3b911546"}
+{"timestamp": "2026-01-06T16:58:22.896193", "level": "PERF", "message": "percentile_test completed in 1.54ms", "operation": "percentile_test", "duration_ms": 1.54, "request_id": "5ca56086"}
+{"timestamp": "2026-01-06T16:58:22.904366", "level": "PERF", "message": "percentile_test completed in 1.49ms", "operation": "percentile_test", "duration_ms": 1.49, "request_id": "43f3e1f7"}
+{"timestamp": "2026-01-06T16:58:22.911953", "level": "PERF", "message": "percentile_test completed in 1.44ms", "operation": "percentile_test", "duration_ms": 1.44, "request_id": "fa933154"}
+{"timestamp": "2026-01-06T16:58:22.925300", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "b5e5fdb2"}
+{"timestamp": "2026-01-06T16:58:22.934863", "level": "PERF", "message": "percentile_test completed in 1.62ms", "operation": "percentile_test", "duration_ms": 1.62, "request_id": "aeb22b41"}
+{"timestamp": "2026-01-06T16:58:22.943368", "level": "PERF", "message": "percentile_test completed in 1.19ms", "operation": "percentile_test", "duration_ms": 1.19, "request_id": "f41e59cb"}
+{"timestamp": "2026-01-06T16:58:22.952842", "level": "PERF", "message": "percentile_test completed in 1.54ms", "operation": "percentile_test", "duration_ms": 1.54, "request_id": "df5f496e"}
+{"timestamp": "2026-01-06T16:58:22.959734", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "7fe17b9d"}
+{"timestamp": "2026-01-06T16:58:22.969471", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "6a69e4bb"}
+{"timestamp": "2026-01-06T16:58:22.978729", "level": "PERF", "message": "percentile_test completed in 1.20ms", "operation": "percentile_test", "duration_ms": 1.2, "request_id": "040b490d"}
+{"timestamp": "2026-01-06T16:58:22.988365", "level": "PERF", "message": "percentile_test completed in 1.23ms", "operation": "percentile_test", "duration_ms": 1.23, "request_id": "7133458d"}
+{"timestamp": "2026-01-06T16:58:22.996534", "level": "PERF", "message": "percentile_test completed in 1.41ms", "operation": "percentile_test", "duration_ms": 1.41, "request_id": "f1e13211"}
+{"timestamp": "2026-01-06T16:58:23.003930", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "09f6843f"}
+{"timestamp": "2026-01-06T16:58:23.013123", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "099d0681"}
+{"timestamp": "2026-01-06T16:58:23.022332", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "026010ae"}
+{"timestamp": "2026-01-06T16:58:23.031391", "level": "PERF", "message": "percentile_test completed in 1.37ms", "operation": "percentile_test", "duration_ms": 1.37, "request_id": "93e82919"}
+{"timestamp": "2026-01-06T16:58:23.042491", "level": "PERF", "message": "percentile_test completed in 1.61ms", "operation": "percentile_test", "duration_ms": 1.61, "request_id": "2483980b"}
+{"timestamp": "2026-01-06T16:58:23.053389", "level": "PERF", "message": "percentile_test completed in 1.61ms", "operation": "percentile_test", "duration_ms": 1.61, "request_id": "1e73468b"}
+{"timestamp": "2026-01-06T16:58:23.064187", "level": "PERF", "message": "percentile_test completed in 1.53ms", "operation": "percentile_test", "duration_ms": 1.53, "request_id": "882923bc"}
+{"timestamp": "2026-01-06T16:58:23.075173", "level": "PERF", "message": "percentile_test completed in 1.39ms", "operation": "percentile_test", "duration_ms": 1.39, "request_id": "44f7dba6"}
+{"timestamp": "2026-01-06T16:58:23.082795", "level": "PERF", "message": "percentile_test completed in 1.12ms", "operation": "percentile_test", "duration_ms": 1.12, "request_id": "506c1aa3"}
+{"timestamp": "2026-01-06T16:58:23.091419", "level": "PERF", "message": "percentile_test completed in 1.36ms", "operation": "percentile_test", "duration_ms": 1.36, "request_id": "f54c8db9"}
+{"timestamp": "2026-01-06T16:58:23.101510", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "08b9284b"}
+{"timestamp": "2026-01-06T16:58:23.111453", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "25f5a603"}
+{"timestamp": "2026-01-06T16:58:23.121685", "level": "PERF", "message": "percentile_test completed in 1.52ms", "operation": "percentile_test", "duration_ms": 1.52, "request_id": "7eb08f5d"}
+{"timestamp": "2026-01-06T16:58:23.132312", "level": "PERF", "message": "percentile_test completed in 1.48ms", "operation": "percentile_test", "duration_ms": 1.48, "request_id": "ebe2713a"}
+{"timestamp": "2026-01-06T16:58:23.146023", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "87a08192"}
+{"timestamp": "2026-01-06T16:58:23.160035", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "09a26a86"}
+{"timestamp": "2026-01-06T16:58:23.171449", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "ad0abbeb"}
+{"timestamp": "2026-01-06T16:58:23.182187", "level": "PERF", "message": "percentile_test completed in 1.64ms", "operation": "percentile_test", "duration_ms": 1.64, "request_id": "45064d32"}
+{"timestamp": "2026-01-06T16:58:23.189697", "level": "PERF", "message": "percentile_test completed in 1.25ms", "operation": "percentile_test", "duration_ms": 1.25, "request_id": "8def8305"}
+{"timestamp": "2026-01-06T16:58:23.200870", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "5aebbd09"}
+{"timestamp": "2026-01-06T16:58:23.209877", "level": "PERF", "message": "percentile_test completed in 1.36ms", "operation": "percentile_test", "duration_ms": 1.36, "request_id": "e13bff38"}
+{"timestamp": "2026-01-06T16:58:23.218594", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "487fb1f9"}
+{"timestamp": "2026-01-06T16:58:23.231926", "level": "PERF", "message": "percentile_test completed in 1.20ms", "operation": "percentile_test", "duration_ms": 1.2, "request_id": "a50c9656"}
+{"timestamp": "2026-01-06T16:58:23.242394", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "69145901"}
+{"timestamp": "2026-01-06T16:58:23.256641", "level": "PERF", "message": "percentile_test completed in 1.14ms", "operation": "percentile_test", "duration_ms": 1.14, "request_id": "581565dc"}
+{"timestamp": "2026-01-06T16:58:23.268371", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "1bcd2f94"}
+{"timestamp": "2026-01-06T16:58:23.278188", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "5e28bd0a"}
+{"timestamp": "2026-01-06T16:58:23.286193", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "be0224d8"}
+{"timestamp": "2026-01-06T16:58:23.294845", "level": "PERF", "message": "percentile_test completed in 1.52ms", "operation": "percentile_test", "duration_ms": 1.52, "request_id": "282c67f7"}
+{"timestamp": "2026-01-06T16:58:23.307683", "level": "PERF", "message": "percentile_test completed in 1.61ms", "operation": "percentile_test", "duration_ms": 1.61, "request_id": "051854ed"}
+{"timestamp": "2026-01-06T16:58:23.315588", "level": "PERF", "message": "percentile_test completed in 1.22ms", "operation": "percentile_test", "duration_ms": 1.22, "request_id": "f8f39e71"}
+{"timestamp": "2026-01-06T16:58:23.325266", "level": "PERF", "message": "percentile_test completed in 1.33ms", "operation": "percentile_test", "duration_ms": 1.33, "request_id": "fe5d34e9"}
+{"timestamp": "2026-01-06T16:58:23.334381", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "b4654830"}
+{"timestamp": "2026-01-06T16:58:23.342680", "level": "PERF", "message": "percentile_test completed in 1.06ms", "operation": "percentile_test", "duration_ms": 1.06, "request_id": "d4e0a2bc"}
+{"timestamp": "2026-01-06T16:58:23.353005", "level": "PERF", "message": "percentile_test completed in 1.49ms", "operation": "percentile_test", "duration_ms": 1.49, "request_id": "4376badb"}
+{"timestamp": "2026-01-06T16:58:23.363713", "level": "PERF", "message": "percentile_test completed in 1.50ms", "operation": "percentile_test", "duration_ms": 1.5, "request_id": "c7a02f98"}
+{"timestamp": "2026-01-06T16:58:23.373998", "level": "PERF", "message": "percentile_test completed in 1.61ms", "operation": "percentile_test", "duration_ms": 1.61, "request_id": "e723717c"}
+{"timestamp": "2026-01-06T16:58:23.384387", "level": "PERF", "message": "percentile_test completed in 1.41ms", "operation": "percentile_test", "duration_ms": 1.41, "request_id": "875c84b3"}
+{"timestamp": "2026-01-06T16:58:23.395831", "level": "PERF", "message": "percentile_test completed in 1.40ms", "operation": "percentile_test", "duration_ms": 1.4, "request_id": "bfe97b4d"}
+{"timestamp": "2026-01-06T16:58:23.407771", "level": "PERF", "message": "percentile_test completed in 1.14ms", "operation": "percentile_test", "duration_ms": 1.14, "request_id": "3e9545e6"}
+{"timestamp": "2026-01-06T16:58:23.419521", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "dbc59df8"}
+{"timestamp": "2026-01-06T16:58:23.432232", "level": "PERF", "message": "percentile_test completed in 1.36ms", "operation": "percentile_test", "duration_ms": 1.36, "request_id": "1d96a0c0"}
+{"timestamp": "2026-01-06T16:58:23.442804", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "2f4143a5"}
+{"timestamp": "2026-01-06T16:58:23.452594", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "84523532"}
+{"timestamp": "2026-01-06T16:58:23.463789", "level": "PERF", "message": "percentile_test completed in 1.60ms", "operation": "percentile_test", "duration_ms": 1.6, "request_id": "252ea2a6"}
+{"timestamp": "2026-01-06T16:58:23.472999", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "5447a84a"}
+{"timestamp": "2026-01-06T16:58:23.482069", "level": "PERF", "message": "percentile_test completed in 1.82ms", "operation": "percentile_test", "duration_ms": 1.82, "request_id": "8cc349a5"}
+{"timestamp": "2026-01-06T16:58:23.490854", "level": "PERF", "message": "percentile_test completed in 1.28ms", "operation": "percentile_test", "duration_ms": 1.28, "request_id": "19e91bd1"}
+{"timestamp": "2026-01-06T16:58:23.498689", "level": "PERF", "message": "percentile_test completed in 1.66ms", "operation": "percentile_test", "duration_ms": 1.66, "request_id": "5305b433"}
+{"timestamp": "2026-01-06T16:58:23.506455", "level": "PERF", "message": "percentile_test completed in 1.56ms", "operation": "percentile_test", "duration_ms": 1.56, "request_id": "0119373b"}
+{"timestamp": "2026-01-06T16:58:23.515579", "level": "PERF", "message": "percentile_test completed in 1.50ms", "operation": "percentile_test", "duration_ms": 1.5, "request_id": "cc52fdd4"}
+{"timestamp": "2026-01-06T16:58:23.523572", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "9af805f4"}
+{"timestamp": "2026-01-06T16:58:23.534339", "level": "PERF", "message": "percentile_test completed in 1.45ms", "operation": "percentile_test", "duration_ms": 1.45, "request_id": "c3b1cbd7"}
+{"timestamp": "2026-01-06T16:58:23.544324", "level": "PERF", "message": "percentile_test completed in 1.76ms", "operation": "percentile_test", "duration_ms": 1.76, "request_id": "b08065e6"}
+{"timestamp": "2026-01-06T16:58:23.553178", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "7edb5d06"}
+{"timestamp": "2026-01-06T16:58:23.564871", "level": "PERF", "message": "percentile_test completed in 1.55ms", "operation": "percentile_test", "duration_ms": 1.55, "request_id": "97bf675a"}
+{"timestamp": "2026-01-06T16:58:23.576542", "level": "PERF", "message": "percentile_test completed in 1.40ms", "operation": "percentile_test", "duration_ms": 1.4, "request_id": "ac143bd0"}
+{"timestamp": "2026-01-06T16:58:23.583308", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "b048ca56"}
+{"timestamp": "2026-01-06T16:58:23.592750", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "f6869e09"}
+{"timestamp": "2026-01-06T16:58:23.604029", "level": "PERF", "message": "percentile_test completed in 1.28ms", "operation": "percentile_test", "duration_ms": 1.28, "request_id": "1de92e3c"}
+{"timestamp": "2026-01-06T16:58:23.613233", "level": "PERF", "message": "percentile_test completed in 1.52ms", "operation": "percentile_test", "duration_ms": 1.52, "request_id": "6f231e17"}
+{"timestamp": "2026-01-06T16:58:23.621756", "level": "PERF", "message": "percentile_test completed in 1.51ms", "operation": "percentile_test", "duration_ms": 1.51, "request_id": "1e4f7a92"}
+{"timestamp": "2026-01-06T16:58:23.632844", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "2e5e8127"}
+{"timestamp": "2026-01-06T16:58:23.641601", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "824726df"}
+{"timestamp": "2026-01-06T16:58:23.650803", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "2b075d78"}
+{"timestamp": "2026-01-06T16:58:23.660352", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "56e0ed03"}
+{"timestamp": "2026-01-06T16:58:23.669997", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "f262685a"}
+{"timestamp": "2026-01-06T16:58:23.678711", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "338f0a28"}
+{"timestamp": "2026-01-06T16:58:23.685945", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "abad674e"}
+{"timestamp": "2026-01-06T16:58:23.697597", "level": "PERF", "message": "percentile_test completed in 1.31ms", "operation": "percentile_test", "duration_ms": 1.31, "request_id": "a8700c07"}
+{"timestamp": "2026-01-06T16:58:23.709466", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "64515ac5"}
+{"timestamp": "2026-01-06T16:58:23.720782", "level": "PERF", "message": "percentile_test completed in 1.34ms", "operation": "percentile_test", "duration_ms": 1.34, "request_id": "4bf35967"}
+{"timestamp": "2026-01-06T16:58:23.730399", "level": "PERF", "message": "percentile_test completed in 1.37ms", "operation": "percentile_test", "duration_ms": 1.37, "request_id": "8042b5a5"}
+{"timestamp": "2026-01-06T16:58:23.739022", "level": "PERF", "message": "temp_operation completed in 0.02ms", "operation": "temp_operation", "duration_ms": 0.02, "request_id": "b8bc8a4f"}
+{"timestamp": "2026-01-06T16:58:23.746009", "level": "PERF", "message": "another_op completed in 0.04ms", "operation": "another_op", "duration_ms": 0.04, "request_id": "f08ec8cb"}
+{"timestamp": "2026-01-06T16:58:23.764693", "level": "PERF", "message": "operation_a completed in 10.20ms", "operation": "operation_a", "duration_ms": 10.2, "request_id": "7c7fb547"}
+{"timestamp": "2026-01-06T16:58:23.794818", "level": "PERF", "message": "operation_b completed in 20.36ms", "operation": "operation_b", "duration_ms": 20.36, "request_id": "f730a560"}
+{"timestamp": "2026-01-06T16:58:23.811825", "level": "PERF", "message": "repeated_operation completed in 10.34ms", "operation": "repeated_operation", "duration_ms": 10.34, "request_id": "166355a1"}
+{"timestamp": "2026-01-06T16:58:23.831035", "level": "PERF", "message": "repeated_operation completed in 10.35ms", "operation": "repeated_operation", "duration_ms": 10.35, "request_id": "6012706e"}
+{"timestamp": "2026-01-06T16:58:23.850106", "level": "PERF", "message": "repeated_operation completed in 10.64ms", "operation": "repeated_operation", "duration_ms": 10.64, "request_id": "64dbef1a"}
+{"timestamp": "2026-01-06T16:58:23.867097", "level": "PERF", "message": "repeated_operation completed in 10.42ms", "operation": "repeated_operation", "duration_ms": 10.42, "request_id": "5685883e"}
+{"timestamp": "2026-01-06T16:58:23.885819", "level": "PERF", "message": "repeated_operation completed in 10.13ms", "operation": "repeated_operation", "duration_ms": 10.13, "request_id": "87276694"}
+{"timestamp": "2026-01-06T16:58:23.949149", "level": "PERF", "message": "async_function completed in 53.41ms", "operation": "async_function", "duration_ms": 53.41, "function": "async_slow_function"}
+{"timestamp": "2026-01-06T16:58:24.007352", "level": "PERF", "message": "sync_function completed in 50.31ms", "operation": "sync_function", "duration_ms": 50.31, "function": "slow_function"}
+{"timestamp": "2026-01-06T16:58:24.116216", "level": "PERF", "message": "test_operation completed in 100.39ms", "tag": "TEST", "operation": "test_operation", "duration_ms": 100.39, "request_id": "0edc21e9"}
+{"timestamp": "2026-01-06T16:58:24.134648", "level": "PERF", "message": "api_call completed in 10.56ms", "tag": "EXTERNAL_API", "operation": "api_call", "duration_ms": 10.56, "request_id": "req_456", "endpoint": "/v1/chat/completions"}
+{"timestamp": "2026-01-06T16:58:24.143086", "level": "INFO", "message": "Info message"}
+{"timestamp": "2026-01-06T16:58:24.149982", "level": "WARNING", "message": "Warning message"}
+{"timestamp": "2026-01-06T16:58:24.160719", "level": "SUCCESS", "message": "Success message"}
+{"timestamp": "2026-01-06T16:58:24.169482", "level": "ROUTE", "message": "Route message"}
+{"timestamp": "2026-01-06T16:58:24.176302", "level": "FALLBACK", "message": "Fallback message"}
+{"timestamp": "2026-01-06T16:58:24.184117", "level": "PERF", "message": "Performance message"}
+{"timestamp": "2026-01-06T16:58:24.195173", "level": "INFO", "message": "Request processed", "tag": "API", "request_id": "req_123", "duration_ms": 150.5, "status_code": 200}
+{"timestamp": "2026-01-06T16:58:24.206354", "level": "WARNING", "message": "Rate limit approaching", "tag": "RATE_LIMIT", "current_rate": 95, "max_rate": 100}
+{"timestamp": "2026-01-06T16:58:49.724967", "level": "INFO", "message": "[TOOL CLEANER] Detected Claude Code (claude_code) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T16:58:49.730943", "level": "INFO", "message": "[TOOL CLEANER] Detected Cline (cline) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T16:58:49.739976", "level": "INFO", "message": "[TOOL CLEANER] Detected Continue.dev (continue_dev) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T16:58:49.752625", "level": "INFO", "message": "[TOOL CLEANER] Detected Aider (aider) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T16:58:49.763476", "level": "INFO", "message": "[TOOL CLEANER] Detected OpenAI SDK (openai_api) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T16:58:50.300169", "level": "PERF", "message": "percentile_test completed in 1.65ms", "operation": "percentile_test", "duration_ms": 1.65, "request_id": "1f3263bb"}
+{"timestamp": "2026-01-06T16:58:50.308051", "level": "PERF", "message": "percentile_test completed in 1.12ms", "operation": "percentile_test", "duration_ms": 1.12, "request_id": "1895c763"}
+{"timestamp": "2026-01-06T16:58:50.315665", "level": "PERF", "message": "percentile_test completed in 1.71ms", "operation": "percentile_test", "duration_ms": 1.71, "request_id": "8053eada"}
+{"timestamp": "2026-01-06T16:58:50.321479", "level": "PERF", "message": "percentile_test completed in 1.14ms", "operation": "percentile_test", "duration_ms": 1.14, "request_id": "732f408b"}
+{"timestamp": "2026-01-06T16:58:50.329601", "level": "PERF", "message": "percentile_test completed in 1.24ms", "operation": "percentile_test", "duration_ms": 1.24, "request_id": "82510f76"}
+{"timestamp": "2026-01-06T16:58:50.338896", "level": "PERF", "message": "percentile_test completed in 1.47ms", "operation": "percentile_test", "duration_ms": 1.47, "request_id": "1d3065bf"}
+{"timestamp": "2026-01-06T16:58:50.346140", "level": "PERF", "message": "percentile_test completed in 1.36ms", "operation": "percentile_test", "duration_ms": 1.36, "request_id": "967b5baf"}
+{"timestamp": "2026-01-06T16:58:50.354494", "level": "PERF", "message": "percentile_test completed in 2.02ms", "operation": "percentile_test", "duration_ms": 2.02, "request_id": "3f9f25dd"}
+{"timestamp": "2026-01-06T16:58:50.361340", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "27fb1611"}
+{"timestamp": "2026-01-06T16:58:50.368294", "level": "PERF", "message": "percentile_test completed in 1.29ms", "operation": "percentile_test", "duration_ms": 1.29, "request_id": "d91e86ed"}
+{"timestamp": "2026-01-06T16:58:50.375249", "level": "PERF", "message": "percentile_test completed in 1.50ms", "operation": "percentile_test", "duration_ms": 1.5, "request_id": "28002546"}
+{"timestamp": "2026-01-06T16:58:50.381639", "level": "PERF", "message": "percentile_test completed in 1.45ms", "operation": "percentile_test", "duration_ms": 1.45, "request_id": "de74e23f"}
+{"timestamp": "2026-01-06T16:58:50.387431", "level": "PERF", "message": "percentile_test completed in 1.37ms", "operation": "percentile_test", "duration_ms": 1.37, "request_id": "f70947f7"}
+{"timestamp": "2026-01-06T16:58:50.392391", "level": "PERF", "message": "percentile_test completed in 1.29ms", "operation": "percentile_test", "duration_ms": 1.29, "request_id": "59298169"}
+{"timestamp": "2026-01-06T16:58:50.396955", "level": "PERF", "message": "percentile_test completed in 1.33ms", "operation": "percentile_test", "duration_ms": 1.33, "request_id": "3c883ce1"}
+{"timestamp": "2026-01-06T16:58:50.401630", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "cb169ffd"}
+{"timestamp": "2026-01-06T16:58:50.407004", "level": "PERF", "message": "percentile_test completed in 1.62ms", "operation": "percentile_test", "duration_ms": 1.62, "request_id": "ac41a268"}
+{"timestamp": "2026-01-06T16:58:50.412550", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "2ebe92c1"}
+{"timestamp": "2026-01-06T16:58:50.417425", "level": "PERF", "message": "percentile_test completed in 1.35ms", "operation": "percentile_test", "duration_ms": 1.35, "request_id": "4a06e9b2"}
+{"timestamp": "2026-01-06T16:58:50.422983", "level": "PERF", "message": "percentile_test completed in 1.15ms", "operation": "percentile_test", "duration_ms": 1.15, "request_id": "ff19e122"}
+{"timestamp": "2026-01-06T16:58:50.428021", "level": "PERF", "message": "percentile_test completed in 1.53ms", "operation": "percentile_test", "duration_ms": 1.53, "request_id": "d90ce475"}
+{"timestamp": "2026-01-06T16:58:50.432439", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "01a47c3b"}
+{"timestamp": "2026-01-06T16:58:50.436700", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "50112ad9"}
+{"timestamp": "2026-01-06T16:58:50.442706", "level": "PERF", "message": "percentile_test completed in 1.78ms", "operation": "percentile_test", "duration_ms": 1.78, "request_id": "e5c25258"}
+{"timestamp": "2026-01-06T16:58:50.447231", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "8e48587c"}
+{"timestamp": "2026-01-06T16:58:50.453328", "level": "PERF", "message": "percentile_test completed in 1.52ms", "operation": "percentile_test", "duration_ms": 1.52, "request_id": "0baaf6f4"}
+{"timestamp": "2026-01-06T16:58:50.458575", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "7781710e"}
+{"timestamp": "2026-01-06T16:58:50.465128", "level": "PERF", "message": "percentile_test completed in 1.15ms", "operation": "percentile_test", "duration_ms": 1.15, "request_id": "c292232d"}
+{"timestamp": "2026-01-06T16:58:50.471274", "level": "PERF", "message": "percentile_test completed in 1.62ms", "operation": "percentile_test", "duration_ms": 1.62, "request_id": "1066d615"}
+{"timestamp": "2026-01-06T16:58:50.477741", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "539d9a51"}
+{"timestamp": "2026-01-06T16:58:50.483511", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "1d4eaa14"}
+{"timestamp": "2026-01-06T16:58:50.489398", "level": "PERF", "message": "percentile_test completed in 1.78ms", "operation": "percentile_test", "duration_ms": 1.78, "request_id": "0a14db81"}
+{"timestamp": "2026-01-06T16:58:50.493762", "level": "PERF", "message": "percentile_test completed in 1.22ms", "operation": "percentile_test", "duration_ms": 1.22, "request_id": "3ed1b5ee"}
+{"timestamp": "2026-01-06T16:58:50.497931", "level": "PERF", "message": "percentile_test completed in 1.41ms", "operation": "percentile_test", "duration_ms": 1.41, "request_id": "163140ac"}
+{"timestamp": "2026-01-06T16:58:50.503213", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "4f76e06c"}
+{"timestamp": "2026-01-06T16:58:50.508069", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "b52430b5"}
+{"timestamp": "2026-01-06T16:58:50.511840", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "52f0ad21"}
+{"timestamp": "2026-01-06T16:58:50.516724", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "3b5db35b"}
+{"timestamp": "2026-01-06T16:58:50.524380", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "b5d21252"}
+{"timestamp": "2026-01-06T16:58:50.529784", "level": "PERF", "message": "percentile_test completed in 1.37ms", "operation": "percentile_test", "duration_ms": 1.37, "request_id": "3e400c1a"}
+{"timestamp": "2026-01-06T16:58:50.535125", "level": "PERF", "message": "percentile_test completed in 1.61ms", "operation": "percentile_test", "duration_ms": 1.61, "request_id": "0d96ddc5"}
+{"timestamp": "2026-01-06T16:58:50.541630", "level": "PERF", "message": "percentile_test completed in 1.43ms", "operation": "percentile_test", "duration_ms": 1.43, "request_id": "49e71f51"}
+{"timestamp": "2026-01-06T16:58:50.546786", "level": "PERF", "message": "percentile_test completed in 1.23ms", "operation": "percentile_test", "duration_ms": 1.23, "request_id": "42e0daa5"}
+{"timestamp": "2026-01-06T16:58:50.551244", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "ff8696af"}
+{"timestamp": "2026-01-06T16:58:50.556639", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "bb00dec6"}
+{"timestamp": "2026-01-06T16:58:50.561152", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "6b9fbddd"}
+{"timestamp": "2026-01-06T16:58:50.565376", "level": "PERF", "message": "percentile_test completed in 1.35ms", "operation": "percentile_test", "duration_ms": 1.35, "request_id": "d539bceb"}
+{"timestamp": "2026-01-06T16:58:50.574180", "level": "PERF", "message": "percentile_test completed in 1.60ms", "operation": "percentile_test", "duration_ms": 1.6, "request_id": "cbc9f86c"}
+{"timestamp": "2026-01-06T16:58:50.579778", "level": "PERF", "message": "percentile_test completed in 1.45ms", "operation": "percentile_test", "duration_ms": 1.45, "request_id": "3a1861be"}
+{"timestamp": "2026-01-06T16:58:50.585363", "level": "PERF", "message": "percentile_test completed in 1.40ms", "operation": "percentile_test", "duration_ms": 1.4, "request_id": "28023e5a"}
+{"timestamp": "2026-01-06T16:58:50.592548", "level": "PERF", "message": "percentile_test completed in 1.52ms", "operation": "percentile_test", "duration_ms": 1.52, "request_id": "0fc422d6"}
+{"timestamp": "2026-01-06T16:58:50.599136", "level": "PERF", "message": "percentile_test completed in 1.61ms", "operation": "percentile_test", "duration_ms": 1.61, "request_id": "9a3e119c"}
+{"timestamp": "2026-01-06T16:58:50.604342", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "3b850fa4"}
+{"timestamp": "2026-01-06T16:58:50.612418", "level": "PERF", "message": "percentile_test completed in 1.60ms", "operation": "percentile_test", "duration_ms": 1.6, "request_id": "e0241735"}
+{"timestamp": "2026-01-06T16:58:50.620382", "level": "PERF", "message": "percentile_test completed in 1.18ms", "operation": "percentile_test", "duration_ms": 1.18, "request_id": "1309eb1d"}
+{"timestamp": "2026-01-06T16:58:50.634095", "level": "PERF", "message": "percentile_test completed in 1.60ms", "operation": "percentile_test", "duration_ms": 1.6, "request_id": "0aa0e02a"}
+{"timestamp": "2026-01-06T16:58:50.648292", "level": "PERF", "message": "percentile_test completed in 1.66ms", "operation": "percentile_test", "duration_ms": 1.66, "request_id": "a4facb9b"}
+{"timestamp": "2026-01-06T16:58:50.664587", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "3d3d0f84"}
+{"timestamp": "2026-01-06T16:58:50.672096", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "1c6ad45b"}
+{"timestamp": "2026-01-06T16:58:50.681614", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "e408d8fb"}
+{"timestamp": "2026-01-06T16:58:50.690432", "level": "PERF", "message": "percentile_test completed in 1.41ms", "operation": "percentile_test", "duration_ms": 1.41, "request_id": "4558ddc7"}
+{"timestamp": "2026-01-06T16:58:50.696917", "level": "PERF", "message": "percentile_test completed in 1.45ms", "operation": "percentile_test", "duration_ms": 1.45, "request_id": "95664561"}
+{"timestamp": "2026-01-06T16:58:50.707052", "level": "PERF", "message": "percentile_test completed in 1.96ms", "operation": "percentile_test", "duration_ms": 1.96, "request_id": "c3a5c5a7"}
+{"timestamp": "2026-01-06T16:58:50.713495", "level": "PERF", "message": "percentile_test completed in 1.29ms", "operation": "percentile_test", "duration_ms": 1.29, "request_id": "633eced7"}
+{"timestamp": "2026-01-06T16:58:50.721663", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "fb5a7f85"}
+{"timestamp": "2026-01-06T16:58:50.732263", "level": "PERF", "message": "percentile_test completed in 1.32ms", "operation": "percentile_test", "duration_ms": 1.32, "request_id": "e1661e64"}
+{"timestamp": "2026-01-06T16:58:50.740005", "level": "PERF", "message": "percentile_test completed in 1.61ms", "operation": "percentile_test", "duration_ms": 1.61, "request_id": "df3dc9dc"}
+{"timestamp": "2026-01-06T16:58:50.749767", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "2d091c45"}
+{"timestamp": "2026-01-06T16:58:50.757196", "level": "PERF", "message": "percentile_test completed in 1.22ms", "operation": "percentile_test", "duration_ms": 1.22, "request_id": "b71dfecb"}
+{"timestamp": "2026-01-06T16:58:50.764850", "level": "PERF", "message": "percentile_test completed in 1.32ms", "operation": "percentile_test", "duration_ms": 1.32, "request_id": "9c6afd85"}
+{"timestamp": "2026-01-06T16:58:50.772243", "level": "PERF", "message": "percentile_test completed in 1.55ms", "operation": "percentile_test", "duration_ms": 1.55, "request_id": "b748fd89"}
+{"timestamp": "2026-01-06T16:58:50.780080", "level": "PERF", "message": "percentile_test completed in 1.56ms", "operation": "percentile_test", "duration_ms": 1.56, "request_id": "d6c3cec6"}
+{"timestamp": "2026-01-06T16:58:50.789474", "level": "PERF", "message": "percentile_test completed in 1.69ms", "operation": "percentile_test", "duration_ms": 1.69, "request_id": "ff6e5a4e"}
+{"timestamp": "2026-01-06T16:58:50.797242", "level": "PERF", "message": "percentile_test completed in 1.89ms", "operation": "percentile_test", "duration_ms": 1.89, "request_id": "536d82fa"}
+{"timestamp": "2026-01-06T16:58:50.804046", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "8ec82427"}
+{"timestamp": "2026-01-06T16:58:50.811310", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "45ae691d"}
+{"timestamp": "2026-01-06T16:58:50.816554", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "4bfdfbca"}
+{"timestamp": "2026-01-06T16:58:50.822976", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "c4c2886d"}
+{"timestamp": "2026-01-06T16:58:50.828165", "level": "PERF", "message": "percentile_test completed in 1.62ms", "operation": "percentile_test", "duration_ms": 1.62, "request_id": "2995f57e"}
+{"timestamp": "2026-01-06T16:58:50.834614", "level": "PERF", "message": "percentile_test completed in 1.14ms", "operation": "percentile_test", "duration_ms": 1.14, "request_id": "fe58324d"}
+{"timestamp": "2026-01-06T16:58:50.840176", "level": "PERF", "message": "percentile_test completed in 1.15ms", "operation": "percentile_test", "duration_ms": 1.15, "request_id": "9043de6c"}
+{"timestamp": "2026-01-06T16:58:50.848302", "level": "PERF", "message": "percentile_test completed in 1.64ms", "operation": "percentile_test", "duration_ms": 1.64, "request_id": "3377a58e"}
+{"timestamp": "2026-01-06T16:58:50.853762", "level": "PERF", "message": "percentile_test completed in 1.30ms", "operation": "percentile_test", "duration_ms": 1.3, "request_id": "a9ac1ec5"}
+{"timestamp": "2026-01-06T16:58:50.859971", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "a47608cd"}
+{"timestamp": "2026-01-06T16:58:50.872837", "level": "PERF", "message": "percentile_test completed in 1.85ms", "operation": "percentile_test", "duration_ms": 1.85, "request_id": "2f3f997c"}
+{"timestamp": "2026-01-06T16:58:50.879901", "level": "PERF", "message": "percentile_test completed in 1.84ms", "operation": "percentile_test", "duration_ms": 1.84, "request_id": "7c743a08"}
+{"timestamp": "2026-01-06T16:58:50.886473", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "3d53d730"}
+{"timestamp": "2026-01-06T16:58:50.893678", "level": "PERF", "message": "percentile_test completed in 1.60ms", "operation": "percentile_test", "duration_ms": 1.6, "request_id": "3e30c4ad"}
+{"timestamp": "2026-01-06T16:58:50.901300", "level": "PERF", "message": "percentile_test completed in 1.66ms", "operation": "percentile_test", "duration_ms": 1.66, "request_id": "62816ae7"}
+{"timestamp": "2026-01-06T16:58:50.912945", "level": "PERF", "message": "percentile_test completed in 1.19ms", "operation": "percentile_test", "duration_ms": 1.19, "request_id": "a24b7e48"}
+{"timestamp": "2026-01-06T16:58:50.919191", "level": "PERF", "message": "percentile_test completed in 1.14ms", "operation": "percentile_test", "duration_ms": 1.14, "request_id": "9e417d2b"}
+{"timestamp": "2026-01-06T16:58:50.925060", "level": "PERF", "message": "percentile_test completed in 1.63ms", "operation": "percentile_test", "duration_ms": 1.63, "request_id": "40a97169"}
+{"timestamp": "2026-01-06T16:58:50.930065", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "8aa19583"}
+{"timestamp": "2026-01-06T16:58:50.937295", "level": "PERF", "message": "percentile_test completed in 1.20ms", "operation": "percentile_test", "duration_ms": 1.2, "request_id": "74c11eb9"}
+{"timestamp": "2026-01-06T16:58:50.942458", "level": "PERF", "message": "percentile_test completed in 1.33ms", "operation": "percentile_test", "duration_ms": 1.33, "request_id": "4ea107f7"}
+{"timestamp": "2026-01-06T16:58:50.948012", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "e35121ed"}
+{"timestamp": "2026-01-06T16:58:50.952746", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "5433225c"}
+{"timestamp": "2026-01-06T16:58:50.957949", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "2e07efff"}
+{"timestamp": "2026-01-06T16:58:50.963097", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "655f4bea"}
+{"timestamp": "2026-01-06T16:58:50.969673", "level": "PERF", "message": "percentile_test completed in 1.31ms", "operation": "percentile_test", "duration_ms": 1.31, "request_id": "b5edfb26"}
+{"timestamp": "2026-01-06T16:58:50.974940", "level": "PERF", "message": "temp_operation completed in 0.03ms", "operation": "temp_operation", "duration_ms": 0.03, "request_id": "f391767a"}
+{"timestamp": "2026-01-06T16:58:50.979916", "level": "PERF", "message": "another_op completed in 0.03ms", "operation": "another_op", "duration_ms": 0.03, "request_id": "61c687ed"}
+{"timestamp": "2026-01-06T16:58:50.993872", "level": "PERF", "message": "operation_a completed in 10.49ms", "operation": "operation_a", "duration_ms": 10.49, "request_id": "b0c15a88"}
+{"timestamp": "2026-01-06T16:58:51.020320", "level": "PERF", "message": "operation_b completed in 20.35ms", "operation": "operation_b", "duration_ms": 20.35, "request_id": "81943417"}
+{"timestamp": "2026-01-06T16:58:51.036307", "level": "PERF", "message": "repeated_operation completed in 10.55ms", "operation": "repeated_operation", "duration_ms": 10.55, "request_id": "9da4a736"}
+{"timestamp": "2026-01-06T16:58:51.054198", "level": "PERF", "message": "repeated_operation completed in 10.28ms", "operation": "repeated_operation", "duration_ms": 10.28, "request_id": "4a058acc"}
+{"timestamp": "2026-01-06T16:58:51.070655", "level": "PERF", "message": "repeated_operation completed in 10.55ms", "operation": "repeated_operation", "duration_ms": 10.55, "request_id": "f818c061"}
+{"timestamp": "2026-01-06T16:58:51.085470", "level": "PERF", "message": "repeated_operation completed in 10.40ms", "operation": "repeated_operation", "duration_ms": 10.4, "request_id": "39cc92f6"}
+{"timestamp": "2026-01-06T16:58:51.104335", "level": "PERF", "message": "repeated_operation completed in 10.18ms", "operation": "repeated_operation", "duration_ms": 10.18, "request_id": "42fc9590"}
+{"timestamp": "2026-01-06T16:58:51.172554", "level": "PERF", "message": "async_function completed in 52.76ms", "operation": "async_function", "duration_ms": 52.76, "function": "async_slow_function"}
+{"timestamp": "2026-01-06T16:58:51.235460", "level": "PERF", "message": "sync_function completed in 50.69ms", "operation": "sync_function", "duration_ms": 50.69, "function": "slow_function"}
+{"timestamp": "2026-01-06T16:58:51.345866", "level": "PERF", "message": "test_operation completed in 100.74ms", "tag": "TEST", "operation": "test_operation", "duration_ms": 100.74, "request_id": "04a7deb8"}
+{"timestamp": "2026-01-06T16:58:51.362933", "level": "PERF", "message": "api_call completed in 10.59ms", "tag": "EXTERNAL_API", "operation": "api_call", "duration_ms": 10.59, "request_id": "req_456", "endpoint": "/v1/chat/completions"}
+{"timestamp": "2026-01-06T16:58:51.369468", "level": "INFO", "message": "Info message"}
+{"timestamp": "2026-01-06T16:58:51.374239", "level": "WARNING", "message": "Warning message"}
+{"timestamp": "2026-01-06T16:58:51.382489", "level": "SUCCESS", "message": "Success message"}
+{"timestamp": "2026-01-06T16:58:51.388490", "level": "ROUTE", "message": "Route message"}
+{"timestamp": "2026-01-06T16:58:51.392852", "level": "FALLBACK", "message": "Fallback message"}
+{"timestamp": "2026-01-06T16:58:51.396299", "level": "PERF", "message": "Performance message"}
+{"timestamp": "2026-01-06T16:58:51.400541", "level": "INFO", "message": "Request processed", "tag": "API", "request_id": "req_123", "duration_ms": 150.5, "status_code": 200}
+{"timestamp": "2026-01-06T16:58:51.408377", "level": "WARNING", "message": "Rate limit approaching", "tag": "RATE_LIMIT", "current_rate": 95, "max_rate": 100}
+{"timestamp": "2026-01-06T17:00:02.739604", "level": "INFO", "message": "测试信息日志"}
+{"timestamp": "2026-01-06T17:00:02.745408", "level": "WARNING", "message": "测试警告日志"}
+{"timestamp": "2026-01-06T17:00:02.752069", "level": "ERROR", "message": "测试错误日志"}
+{"timestamp": "2026-01-06T17:00:02.759547", "level": "PERF", "message": "测试性能日志", "duration_ms": 123.45}
+{"timestamp": "2026-01-06T17:00:02.867028", "level": "PERF", "message": "test_operation completed in 100.13ms", "tag": "TEST", "operation": "test_operation", "duration_ms": 100.13, "request_id": "e130813b"}
+{"timestamp": "2026-01-06T17:00:02.883534", "level": "PERF", "message": "batch_test completed in 10.80ms", "operation": "batch_test", "duration_ms": 10.8, "request_id": "469281f7"}
+{"timestamp": "2026-01-06T17:00:02.900089", "level": "PERF", "message": "batch_test completed in 10.24ms", "operation": "batch_test", "duration_ms": 10.24, "request_id": "edd5d3f5"}
+{"timestamp": "2026-01-06T17:00:02.915742", "level": "PERF", "message": "batch_test completed in 10.10ms", "operation": "batch_test", "duration_ms": 10.1, "request_id": "f671f0d0"}
+{"timestamp": "2026-01-06T17:00:02.933665", "level": "PERF", "message": "batch_test completed in 10.46ms", "operation": "batch_test", "duration_ms": 10.46, "request_id": "bfebee46"}
+{"timestamp": "2026-01-06T17:00:02.949501", "level": "PERF", "message": "batch_test completed in 10.20ms", "operation": "batch_test", "duration_ms": 10.2, "request_id": "a7f4d110"}
+{"timestamp": "2026-01-06T17:34:09.283536", "level": "INFO", "message": "Converting untyped tool call: call_id=call_456, name=grep, type=unknown_type"}
+{"timestamp": "2026-01-06T17:34:09.287935", "level": "INFO", "message": "Converting untyped tool result: call_id=call_456, output_len=11, type=unknown_type"}
+{"timestamp": "2026-01-06T17:34:29.953612", "level": "INFO", "message": "[TOOL CLEANER] Detected Claude Code (claude_code) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T17:34:29.960602", "level": "INFO", "message": "[TOOL CLEANER] Detected Cline (cline) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T17:34:29.970166", "level": "INFO", "message": "[TOOL CLEANER] Detected Continue.dev (continue_dev) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T17:34:29.981118", "level": "INFO", "message": "[TOOL CLEANER] Detected Aider (aider) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T17:34:29.991195", "level": "INFO", "message": "[TOOL CLEANER] Detected OpenAI SDK (openai_api) - cross-pool fallback ENABLED"}
+{"timestamp": "2026-01-06T17:34:30.387515", "level": "PERF", "message": "percentile_test completed in 1.25ms", "operation": "percentile_test", "duration_ms": 1.25, "request_id": "3629e9c5"}
+{"timestamp": "2026-01-06T17:34:30.394873", "level": "PERF", "message": "percentile_test completed in 1.49ms", "operation": "percentile_test", "duration_ms": 1.49, "request_id": "da80e806"}
+{"timestamp": "2026-01-06T17:34:30.404618", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "05a9d4b8"}
+{"timestamp": "2026-01-06T17:34:30.415470", "level": "PERF", "message": "percentile_test completed in 1.15ms", "operation": "percentile_test", "duration_ms": 1.15, "request_id": "08ba8652"}
+{"timestamp": "2026-01-06T17:34:30.423822", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "3b0b0a80"}
+{"timestamp": "2026-01-06T17:34:30.433433", "level": "PERF", "message": "percentile_test completed in 1.54ms", "operation": "percentile_test", "duration_ms": 1.54, "request_id": "f237c670"}
+{"timestamp": "2026-01-06T17:34:30.442255", "level": "PERF", "message": "percentile_test completed in 1.45ms", "operation": "percentile_test", "duration_ms": 1.45, "request_id": "fa52d10a"}
+{"timestamp": "2026-01-06T17:34:30.450974", "level": "PERF", "message": "percentile_test completed in 1.20ms", "operation": "percentile_test", "duration_ms": 1.2, "request_id": "6177098d"}
+{"timestamp": "2026-01-06T17:34:30.458482", "level": "PERF", "message": "percentile_test completed in 1.51ms", "operation": "percentile_test", "duration_ms": 1.51, "request_id": "efe59a54"}
+{"timestamp": "2026-01-06T17:34:30.467365", "level": "PERF", "message": "percentile_test completed in 1.45ms", "operation": "percentile_test", "duration_ms": 1.45, "request_id": "53208a4c"}
+{"timestamp": "2026-01-06T17:34:30.477453", "level": "PERF", "message": "percentile_test completed in 1.12ms", "operation": "percentile_test", "duration_ms": 1.12, "request_id": "05f74172"}
+{"timestamp": "2026-01-06T17:34:30.487465", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "21f9c117"}
+{"timestamp": "2026-01-06T17:34:30.497353", "level": "PERF", "message": "percentile_test completed in 1.51ms", "operation": "percentile_test", "duration_ms": 1.51, "request_id": "79620d95"}
+{"timestamp": "2026-01-06T17:34:30.504001", "level": "PERF", "message": "percentile_test completed in 1.23ms", "operation": "percentile_test", "duration_ms": 1.23, "request_id": "1705cbbe"}
+{"timestamp": "2026-01-06T17:34:30.514658", "level": "PERF", "message": "percentile_test completed in 1.53ms", "operation": "percentile_test", "duration_ms": 1.53, "request_id": "01e6e0e9"}
+{"timestamp": "2026-01-06T17:34:30.525514", "level": "PERF", "message": "percentile_test completed in 1.67ms", "operation": "percentile_test", "duration_ms": 1.67, "request_id": "9b13c278"}
+{"timestamp": "2026-01-06T17:34:30.534069", "level": "PERF", "message": "percentile_test completed in 1.53ms", "operation": "percentile_test", "duration_ms": 1.53, "request_id": "7b2a880b"}
+{"timestamp": "2026-01-06T17:34:30.545670", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "d8e996a4"}
+{"timestamp": "2026-01-06T17:34:30.555771", "level": "PERF", "message": "percentile_test completed in 1.33ms", "operation": "percentile_test", "duration_ms": 1.33, "request_id": "adafc542"}
+{"timestamp": "2026-01-06T17:34:30.567787", "level": "PERF", "message": "percentile_test completed in 1.16ms", "operation": "percentile_test", "duration_ms": 1.16, "request_id": "87201976"}
+{"timestamp": "2026-01-06T17:34:30.581161", "level": "PERF", "message": "percentile_test completed in 1.46ms", "operation": "percentile_test", "duration_ms": 1.46, "request_id": "c81ebf4b"}
+{"timestamp": "2026-01-06T17:34:30.591373", "level": "PERF", "message": "percentile_test completed in 1.05ms", "operation": "percentile_test", "duration_ms": 1.05, "request_id": "e07d9a99"}
+{"timestamp": "2026-01-06T17:34:30.605393", "level": "PERF", "message": "percentile_test completed in 1.63ms", "operation": "percentile_test", "duration_ms": 1.63, "request_id": "05dfc6e1"}
+{"timestamp": "2026-01-06T17:34:30.616550", "level": "PERF", "message": "percentile_test completed in 1.62ms", "operation": "percentile_test", "duration_ms": 1.62, "request_id": "19e54be8"}
+{"timestamp": "2026-01-06T17:34:30.630091", "level": "PERF", "message": "percentile_test completed in 1.26ms", "operation": "percentile_test", "duration_ms": 1.26, "request_id": "76e95813"}
+{"timestamp": "2026-01-06T17:34:30.640717", "level": "PERF", "message": "percentile_test completed in 1.82ms", "operation": "percentile_test", "duration_ms": 1.82, "request_id": "6f252426"}
+{"timestamp": "2026-01-06T17:34:30.652103", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "062e5d64"}
+{"timestamp": "2026-01-06T17:34:30.665592", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "6b0de161"}
+{"timestamp": "2026-01-06T17:34:30.675568", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "73ec9944"}
+{"timestamp": "2026-01-06T17:34:30.684536", "level": "PERF", "message": "percentile_test completed in 1.60ms", "operation": "percentile_test", "duration_ms": 1.6, "request_id": "e7cd1712"}
+{"timestamp": "2026-01-06T17:34:30.694690", "level": "PERF", "message": "percentile_test completed in 1.43ms", "operation": "percentile_test", "duration_ms": 1.43, "request_id": "583589d4"}
+{"timestamp": "2026-01-06T17:34:30.703837", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "deada386"}
+{"timestamp": "2026-01-06T17:34:30.714573", "level": "PERF", "message": "percentile_test completed in 1.61ms", "operation": "percentile_test", "duration_ms": 1.61, "request_id": "12081b15"}
+{"timestamp": "2026-01-06T17:34:30.724114", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "b0819d52"}
+{"timestamp": "2026-01-06T17:34:30.733560", "level": "PERF", "message": "percentile_test completed in 1.83ms", "operation": "percentile_test", "duration_ms": 1.83, "request_id": "5e454f9c"}
+{"timestamp": "2026-01-06T17:34:30.743810", "level": "PERF", "message": "percentile_test completed in 1.33ms", "operation": "percentile_test", "duration_ms": 1.33, "request_id": "752f138b"}
+{"timestamp": "2026-01-06T17:34:30.753508", "level": "PERF", "message": "percentile_test completed in 1.43ms", "operation": "percentile_test", "duration_ms": 1.43, "request_id": "62fb291e"}
+{"timestamp": "2026-01-06T17:34:30.766322", "level": "PERF", "message": "percentile_test completed in 1.28ms", "operation": "percentile_test", "duration_ms": 1.28, "request_id": "61eafef2"}
+{"timestamp": "2026-01-06T17:34:30.776083", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "a2f29551"}
+{"timestamp": "2026-01-06T17:34:30.784620", "level": "PERF", "message": "percentile_test completed in 1.19ms", "operation": "percentile_test", "duration_ms": 1.19, "request_id": "2a7a177d"}
+{"timestamp": "2026-01-06T17:34:30.794454", "level": "PERF", "message": "percentile_test completed in 1.20ms", "operation": "percentile_test", "duration_ms": 1.2, "request_id": "e7108d87"}
+{"timestamp": "2026-01-06T17:34:30.804265", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "1fdcd2ec"}
+{"timestamp": "2026-01-06T17:34:30.815192", "level": "PERF", "message": "percentile_test completed in 1.08ms", "operation": "percentile_test", "duration_ms": 1.08, "request_id": "09414364"}
+{"timestamp": "2026-01-06T17:34:30.827313", "level": "PERF", "message": "percentile_test completed in 1.28ms", "operation": "percentile_test", "duration_ms": 1.28, "request_id": "1c9a6df1"}
+{"timestamp": "2026-01-06T17:34:30.837978", "level": "PERF", "message": "percentile_test completed in 1.35ms", "operation": "percentile_test", "duration_ms": 1.35, "request_id": "c4d65dbd"}
+{"timestamp": "2026-01-06T17:34:30.848309", "level": "PERF", "message": "percentile_test completed in 1.35ms", "operation": "percentile_test", "duration_ms": 1.35, "request_id": "f7ad4aa0"}
+{"timestamp": "2026-01-06T17:34:30.857309", "level": "PERF", "message": "percentile_test completed in 1.26ms", "operation": "percentile_test", "duration_ms": 1.26, "request_id": "e8c2f39a"}
+{"timestamp": "2026-01-06T17:34:30.870071", "level": "PERF", "message": "percentile_test completed in 1.66ms", "operation": "percentile_test", "duration_ms": 1.66, "request_id": "dfdb71af"}
+{"timestamp": "2026-01-06T17:34:30.883807", "level": "PERF", "message": "percentile_test completed in 1.55ms", "operation": "percentile_test", "duration_ms": 1.55, "request_id": "3f6e197d"}
+{"timestamp": "2026-01-06T17:34:30.896793", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "d2037c88"}
+{"timestamp": "2026-01-06T17:34:30.906633", "level": "PERF", "message": "percentile_test completed in 1.09ms", "operation": "percentile_test", "duration_ms": 1.09, "request_id": "7e9b4b89"}
+{"timestamp": "2026-01-06T17:34:30.921573", "level": "PERF", "message": "percentile_test completed in 1.39ms", "operation": "percentile_test", "duration_ms": 1.39, "request_id": "9b476007"}
+{"timestamp": "2026-01-06T17:34:30.932796", "level": "PERF", "message": "percentile_test completed in 1.16ms", "operation": "percentile_test", "duration_ms": 1.16, "request_id": "db1f11ad"}
+{"timestamp": "2026-01-06T17:34:30.946760", "level": "PERF", "message": "percentile_test completed in 1.30ms", "operation": "percentile_test", "duration_ms": 1.3, "request_id": "fb4f1426"}
+{"timestamp": "2026-01-06T17:34:30.956954", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "32597040"}
+{"timestamp": "2026-01-06T17:34:30.968367", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "314c9d90"}
+{"timestamp": "2026-01-06T17:34:30.981288", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "00960cdf"}
+{"timestamp": "2026-01-06T17:34:30.997002", "level": "PERF", "message": "percentile_test completed in 1.51ms", "operation": "percentile_test", "duration_ms": 1.51, "request_id": "b47e41a8"}
+{"timestamp": "2026-01-06T17:34:31.009215", "level": "PERF", "message": "percentile_test completed in 1.32ms", "operation": "percentile_test", "duration_ms": 1.32, "request_id": "66f5e2e3"}
+{"timestamp": "2026-01-06T17:34:31.018770", "level": "PERF", "message": "percentile_test completed in 1.13ms", "operation": "percentile_test", "duration_ms": 1.13, "request_id": "262bd770"}
+{"timestamp": "2026-01-06T17:34:31.029060", "level": "PERF", "message": "percentile_test completed in 1.65ms", "operation": "percentile_test", "duration_ms": 1.65, "request_id": "7f8e8866"}
+{"timestamp": "2026-01-06T17:34:31.040747", "level": "PERF", "message": "percentile_test completed in 1.55ms", "operation": "percentile_test", "duration_ms": 1.55, "request_id": "86b95389"}
+{"timestamp": "2026-01-06T17:34:31.052278", "level": "PERF", "message": "percentile_test completed in 1.32ms", "operation": "percentile_test", "duration_ms": 1.32, "request_id": "58224144"}
+{"timestamp": "2026-01-06T17:34:31.061704", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "07ff829f"}
+{"timestamp": "2026-01-06T17:34:31.070868", "level": "PERF", "message": "percentile_test completed in 1.59ms", "operation": "percentile_test", "duration_ms": 1.59, "request_id": "fbf6fff0"}
+{"timestamp": "2026-01-06T17:34:31.079878", "level": "PERF", "message": "percentile_test completed in 1.21ms", "operation": "percentile_test", "duration_ms": 1.21, "request_id": "9ffef23b"}
+{"timestamp": "2026-01-06T17:34:31.089780", "level": "PERF", "message": "percentile_test completed in 1.75ms", "operation": "percentile_test", "duration_ms": 1.75, "request_id": "0719dc6b"}
+{"timestamp": "2026-01-06T17:34:31.100846", "level": "PERF", "message": "percentile_test completed in 1.06ms", "operation": "percentile_test", "duration_ms": 1.06, "request_id": "8a066d02"}
+{"timestamp": "2026-01-06T17:34:31.111051", "level": "PERF", "message": "percentile_test completed in 1.52ms", "operation": "percentile_test", "duration_ms": 1.52, "request_id": "54096d80"}
+{"timestamp": "2026-01-06T17:34:31.122303", "level": "PERF", "message": "percentile_test completed in 1.36ms", "operation": "percentile_test", "duration_ms": 1.36, "request_id": "35c3b857"}
+{"timestamp": "2026-01-06T17:34:31.132259", "level": "PERF", "message": "percentile_test completed in 1.37ms", "operation": "percentile_test", "duration_ms": 1.37, "request_id": "11cb5abc"}
+{"timestamp": "2026-01-06T17:34:31.141692", "level": "PERF", "message": "percentile_test completed in 1.23ms", "operation": "percentile_test", "duration_ms": 1.23, "request_id": "6245263b"}
+{"timestamp": "2026-01-06T17:34:31.152633", "level": "PERF", "message": "percentile_test completed in 1.47ms", "operation": "percentile_test", "duration_ms": 1.47, "request_id": "f5630924"}
+{"timestamp": "2026-01-06T17:34:31.166282", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "e6fa3b06"}
+{"timestamp": "2026-01-06T17:34:31.176700", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "1f5dc2cb"}
+{"timestamp": "2026-01-06T17:34:31.190207", "level": "PERF", "message": "percentile_test completed in 1.52ms", "operation": "percentile_test", "duration_ms": 1.52, "request_id": "8aa6dcae"}
+{"timestamp": "2026-01-06T17:34:31.202635", "level": "PERF", "message": "percentile_test completed in 1.12ms", "operation": "percentile_test", "duration_ms": 1.12, "request_id": "5f266eb6"}
+{"timestamp": "2026-01-06T17:34:31.215887", "level": "PERF", "message": "percentile_test completed in 1.63ms", "operation": "percentile_test", "duration_ms": 1.63, "request_id": "dc723e82"}
+{"timestamp": "2026-01-06T17:34:31.228921", "level": "PERF", "message": "percentile_test completed in 1.28ms", "operation": "percentile_test", "duration_ms": 1.28, "request_id": "d45d92d4"}
+{"timestamp": "2026-01-06T17:34:31.239641", "level": "PERF", "message": "percentile_test completed in 1.48ms", "operation": "percentile_test", "duration_ms": 1.48, "request_id": "9741f771"}
+{"timestamp": "2026-01-06T17:34:31.250310", "level": "PERF", "message": "percentile_test completed in 1.37ms", "operation": "percentile_test", "duration_ms": 1.37, "request_id": "1c6aad2c"}
+{"timestamp": "2026-01-06T17:34:31.261046", "level": "PERF", "message": "percentile_test completed in 1.65ms", "operation": "percentile_test", "duration_ms": 1.65, "request_id": "a8e16a21"}
+{"timestamp": "2026-01-06T17:34:31.274782", "level": "PERF", "message": "percentile_test completed in 1.61ms", "operation": "percentile_test", "duration_ms": 1.61, "request_id": "47b43c77"}
+{"timestamp": "2026-01-06T17:34:31.284940", "level": "PERF", "message": "percentile_test completed in 1.20ms", "operation": "percentile_test", "duration_ms": 1.2, "request_id": "08c82562"}
+{"timestamp": "2026-01-06T17:34:31.295570", "level": "PERF", "message": "percentile_test completed in 1.12ms", "operation": "percentile_test", "duration_ms": 1.12, "request_id": "de483df4"}
+{"timestamp": "2026-01-06T17:34:31.305226", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "281fd030"}
+{"timestamp": "2026-01-06T17:34:31.316950", "level": "PERF", "message": "percentile_test completed in 1.31ms", "operation": "percentile_test", "duration_ms": 1.31, "request_id": "cac70db5"}
+{"timestamp": "2026-01-06T17:34:31.326902", "level": "PERF", "message": "percentile_test completed in 1.14ms", "operation": "percentile_test", "duration_ms": 1.14, "request_id": "dbb9576e"}
+{"timestamp": "2026-01-06T17:34:31.338915", "level": "PERF", "message": "percentile_test completed in 1.58ms", "operation": "percentile_test", "duration_ms": 1.58, "request_id": "2b7b20c3"}
+{"timestamp": "2026-01-06T17:34:31.350241", "level": "PERF", "message": "percentile_test completed in 1.10ms", "operation": "percentile_test", "duration_ms": 1.1, "request_id": "ce213be2"}
+{"timestamp": "2026-01-06T17:34:31.360088", "level": "PERF", "message": "percentile_test completed in 1.39ms", "operation": "percentile_test", "duration_ms": 1.39, "request_id": "b5528428"}
+{"timestamp": "2026-01-06T17:34:31.370963", "level": "PERF", "message": "percentile_test completed in 1.11ms", "operation": "percentile_test", "duration_ms": 1.11, "request_id": "9bb0c904"}
+{"timestamp": "2026-01-06T17:34:31.380751", "level": "PERF", "message": "percentile_test completed in 1.33ms", "operation": "percentile_test", "duration_ms": 1.33, "request_id": "211e5ff7"}
+{"timestamp": "2026-01-06T17:34:31.389325", "level": "PERF", "message": "percentile_test completed in 1.06ms", "operation": "percentile_test", "duration_ms": 1.06, "request_id": "c54b275d"}
+{"timestamp": "2026-01-06T17:34:31.402015", "level": "PERF", "message": "percentile_test completed in 1.57ms", "operation": "percentile_test", "duration_ms": 1.57, "request_id": "026996d2"}
+{"timestamp": "2026-01-06T17:34:31.414839", "level": "PERF", "message": "percentile_test completed in 1.20ms", "operation": "percentile_test", "duration_ms": 1.2, "request_id": "ca1bf263"}
+{"timestamp": "2026-01-06T17:34:31.425600", "level": "PERF", "message": "percentile_test completed in 1.12ms", "operation": "percentile_test", "duration_ms": 1.12, "request_id": "63e0f342"}
+{"timestamp": "2026-01-06T17:34:31.434144", "level": "PERF", "message": "percentile_test completed in 1.17ms", "operation": "percentile_test", "duration_ms": 1.17, "request_id": "6d3cd5fd"}
+{"timestamp": "2026-01-06T17:34:31.444441", "level": "PERF", "message": "percentile_test completed in 1.16ms", "operation": "percentile_test", "duration_ms": 1.16, "request_id": "f513f7d4"}
+{"timestamp": "2026-01-06T17:34:31.453952", "level": "PERF", "message": "percentile_test completed in 1.07ms", "operation": "percentile_test", "duration_ms": 1.07, "request_id": "cfc63f7e"}
+{"timestamp": "2026-01-06T17:34:31.464012", "level": "PERF", "message": "temp_operation completed in 0.02ms", "operation": "temp_operation", "duration_ms": 0.02, "request_id": "5139b6f7"}
+{"timestamp": "2026-01-06T17:34:31.475274", "level": "PERF", "message": "another_op completed in 0.02ms", "operation": "another_op", "duration_ms": 0.02, "request_id": "a2ed2204"}
+{"timestamp": "2026-01-06T17:34:31.495804", "level": "PERF", "message": "operation_a completed in 10.32ms", "operation": "operation_a", "duration_ms": 10.32, "request_id": "eaa252ed"}
+{"timestamp": "2026-01-06T17:34:31.527943", "level": "PERF", "message": "operation_b completed in 20.39ms", "operation": "operation_b", "duration_ms": 20.39, "request_id": "aab9a8dd"}
+{"timestamp": "2026-01-06T17:34:31.548524", "level": "PERF", "message": "repeated_operation completed in 10.15ms", "operation": "repeated_operation", "duration_ms": 10.15, "request_id": "7b4074c8"}
+{"timestamp": "2026-01-06T17:34:31.570443", "level": "PERF", "message": "repeated_operation completed in 10.48ms", "operation": "repeated_operation", "duration_ms": 10.48, "request_id": "c0f4695c"}
+{"timestamp": "2026-01-06T17:34:31.594284", "level": "PERF", "message": "repeated_operation completed in 10.53ms", "operation": "repeated_operation", "duration_ms": 10.53, "request_id": "d51ab59d"}
+{"timestamp": "2026-01-06T17:34:31.615008", "level": "PERF", "message": "repeated_operation completed in 10.73ms", "operation": "repeated_operation", "duration_ms": 10.73, "request_id": "907914db"}
+{"timestamp": "2026-01-06T17:34:31.638297", "level": "PERF", "message": "repeated_operation completed in 10.53ms", "operation": "repeated_operation", "duration_ms": 10.53, "request_id": "fe2d6fe8"}
+{"timestamp": "2026-01-06T17:34:31.706765", "level": "PERF", "message": "async_function completed in 56.41ms", "operation": "async_function", "duration_ms": 56.41, "function": "async_slow_function"}
+{"timestamp": "2026-01-06T17:34:31.768383", "level": "PERF", "message": "sync_function completed in 50.76ms", "operation": "sync_function", "duration_ms": 50.76, "function": "slow_function"}
+{"timestamp": "2026-01-06T17:34:31.885386", "level": "PERF", "message": "test_operation completed in 105.16ms", "tag": "TEST", "operation": "test_operation", "duration_ms": 105.16, "request_id": "cedc2a81"}
+{"timestamp": "2026-01-06T17:34:31.910192", "level": "PERF", "message": "api_call completed in 10.57ms", "tag": "EXTERNAL_API", "operation": "api_call", "duration_ms": 10.57, "request_id": "req_456", "endpoint": "/v1/chat/completions"}
+{"timestamp": "2026-01-06T17:34:31.918410", "level": "INFO", "message": "Info message"}
+{"timestamp": "2026-01-06T17:34:31.926817", "level": "WARNING", "message": "Warning message"}
+{"timestamp": "2026-01-06T17:34:31.935937", "level": "SUCCESS", "message": "Success message"}
+{"timestamp": "2026-01-06T17:34:31.945902", "level": "ROUTE", "message": "Route message"}
+{"timestamp": "2026-01-06T17:34:31.955000", "level": "FALLBACK", "message": "Fallback message"}
+{"timestamp": "2026-01-06T17:34:31.967556", "level": "PERF", "message": "Performance message"}
+{"timestamp": "2026-01-06T17:34:31.978860", "level": "INFO", "message": "Request processed", "tag": "API", "request_id": "req_123", "duration_ms": 150.5, "status_code": 200}
+{"timestamp": "2026-01-06T17:34:31.991258", "level": "WARNING", "message": "Rate limit approaching", "tag": "RATE_LIMIT", "current_rate": 95, "max_rate": 100}
+{"timestamp": "2026-01-06T17:34:33.240209", "level": "INFO", "message": "Converting untyped tool call: call_id=call_456, name=grep, type=unknown_type"}
+{"timestamp": "2026-01-06T17:34:33.248423", "level": "INFO", "message": "Converting untyped tool result: call_id=call_456, output_len=11, type=unknown_type"}
