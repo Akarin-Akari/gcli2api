@@ -109,7 +109,11 @@ async def openai_request_to_gemini_payload(
                         if isinstance(tool_call.function.arguments, str)
                         else tool_call.function.arguments
                     )
-                    parts.append({"functionCall": {"name": tool_call.function.name, "args": args}})
+                    parts.append({
+                        "functionCall": {"name": tool_call.function.name, "args": args},
+                        # Gemini 3 要求 functionCall 必须包含 thoughtSignature
+                        "thoughtSignature": "skip_thought_signature_validator",
+                    })
                     parsed_count += 1
                 except (json.JSONDecodeError, AttributeError) as e:
                     log.error(
@@ -864,13 +868,55 @@ def convert_tool_message_to_function_response(message, all_messages: List = None
 
     Args:
         message: OpenAI 格式的工具消息
-        all_messages: 所有消息的列表（未使用，保留用于兼容性）
+        all_messages: 所有消息的列表，用于在缺少 name 时查找对应的 tool_call
 
     Returns:
         Gemini 格式的 functionResponse part
+
+    Raises:
+        ValueError: 如果 tool 消息缺少必需的 name 字段且无法从历史中推断
     """
-    # 获取 name 字段，如果缺失则使用默认值
-    name = getattr(message, "name", "unknown")
+    # 获取 name 字段
+    name = None
+    if hasattr(message, "name") and message.name:
+        name = message.name
+    else:
+        # 尝试从历史消息中查找对应的 tool_call
+        tool_call_id = getattr(message, "tool_call_id", None)
+        if tool_call_id and all_messages:
+            # 遍历历史消息，查找包含 tool_call_id 的 assistant 消息
+            for hist_msg in all_messages:
+                if (
+                    hasattr(hist_msg, "role")
+                    and hist_msg.role == "assistant"
+                    and hasattr(hist_msg, "tool_calls")
+                    and hist_msg.tool_calls
+                ):
+                    # 在 tool_calls 中查找匹配的 id
+                    for tool_call in hist_msg.tool_calls:
+                        if tool_call.id == tool_call_id:
+                            name = tool_call.function.name
+                            log.info(
+                                f"Tool message missing 'name' field, "
+                                f"inferred from history: {name} (tool_call_id={tool_call_id})"
+                            )
+                            break
+                    if name:
+                        break
+
+        # 如果仍然没有找到 name
+        if not name:
+            content_preview = (
+                str(message.content)[:100] if hasattr(message, "content") else "no content"
+            )
+            error_msg = (
+                f"Tool message must have a 'name' field. "
+                f"The 'name' field is required to match the tool call with its response in Gemini API. "
+                f"tool_call_id={tool_call_id or 'missing'}, content preview: {content_preview}... "
+                f"Please ensure your client sends tool messages with the 'name' field set to the function name."
+            )
+            log.error(error_msg)
+            raise ValueError(error_msg)
 
     try:
         # 尝试将 content 解析为 JSON
