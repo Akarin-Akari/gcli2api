@@ -50,9 +50,10 @@ from .anti_truncation import (
 from .tool_cleaner import get_client_info, clean_json_schema_for_tool
 from .fallback_manager import (
     is_quota_exhausted_error, is_retryable_error, is_403_error,
-    is_credential_unavailable_error, get_fallback_models
+    is_credential_unavailable_error
 )
 from .converters.tool_converter import validate_tool_name
+from .converters.model_config import get_fallback_models
 
 # 创建路由器
 router = APIRouter()
