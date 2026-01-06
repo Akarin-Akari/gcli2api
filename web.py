@@ -23,6 +23,7 @@ from src.antigravity_anthropic_router import router as antigravity_anthropic_rou
 from src.openai_router import router as openai_router
 from src.task_manager import shutdown_all_tasks
 from src.web_routes import router as web_router
+from src.unified_gateway_router import router as gateway_router
 
 # 全局凭证管理器
 global_credential_manager = None
@@ -110,6 +111,9 @@ app.include_router(antigravity_anthropic_router, prefix="", tags=["Antigravity A
 # Web路由 - 包含认证、凭证管理和控制面板功能
 app.include_router(web_router, prefix="", tags=["Web Interface"])
 
+# 统一网关路由 - 整合多后端服务，支持优先级路由和故障转移
+app.include_router(gateway_router, prefix="", tags=["Unified Gateway"])
+
 # 静态文件路由 - 服务docs目录下的文件（如捐赠图片）
 app.mount("/docs", StaticFiles(directory="docs"), name="docs")
 
@@ -154,6 +158,10 @@ async def main():
     log.info(f"   Antigravity (claude格式): http://127.0.0.1:{port}/antigravity/v1")
     log.info(f"   Antigravity (Gemini格式): http://127.0.0.1:{port}/antigravity")
     log.info(f"   Antigravity (SD-WebUI格式): http://127.0.0.1:{port}/antigravity")
+    log.info("=" * 60)
+    log.info("统一网关 (自动故障转移):")
+    log.info(f"   Gateway API: http://127.0.0.1:{port}/gateway/v1")
+    log.info(f"   优先级: Antigravity > Copilot")
 
     # 配置hypercorn
     config = Config()
@@ -162,9 +170,13 @@ async def main():
     config.errorlog = "-"
     config.loglevel = "INFO"
 
+    # 设置请求体大小限制为100MB
+    config.max_request_body_size = 100 * 1024 * 1024
+
     # 设置连接超时
-    config.keep_alive_timeout = 600  # 10分钟
-    config.read_timeout = 600  # 10分钟读取超时
+    config.keep_alive_timeout = 300  # 5分钟
+    config.read_timeout = 300  # 5分钟读取超时
+    config.write_timeout = 300  # 5分钟写入超时
 
     # 增加启动超时时间以支持大量凭证的场景
     config.startup_timeout = 120  # 2分钟启动超时
