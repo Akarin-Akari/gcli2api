@@ -1,12 +1,20 @@
 """
 Antigravity Router - Handles OpenAI and Gemini format requests and converts to Antigravity API
 处理 OpenAI 和 Gemini 格式请求并转换为 Antigravity API 格式
+
+增强功能（来自自定义版本）：
+- Cursor IDE 兼容性适配
+- 跨池 Fallback 机制
+- 上下文分析与阈值检测
+- 流式响应增强（空响应处理、finish_reason 修复）
+- 工具格式清理与验证
 """
 
 import json
+import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -37,6 +45,15 @@ from .anti_truncation import (
     apply_anti_truncation_to_stream,
 )
 
+# ==================== 自定义模块导入 ====================
+# 这些模块提供了 Cursor IDE 兼容性和增强功能
+from .tool_cleaner import get_client_info, clean_tool_schema_for_gemini
+from .fallback_manager import (
+    is_quota_exhausted_error, is_retryable_error, is_403_error,
+    is_credential_unavailable_error, get_fallback_models
+)
+from .converters.tool_converter import validate_tool_name
+
 # 创建路由器
 router = APIRouter()
 
@@ -51,6 +68,98 @@ async def get_credential_manager():
         credential_manager = CredentialManager()
         await credential_manager.initialize()
     return credential_manager
+
+
+# ==================== 自定义辅助函数 ====================
+
+def strip_thinking_from_openai_messages(messages: List[Any]) -> List[Any]:
+    """
+    从 OpenAI 格式的消息中移除 thinking 内容块
+    用于在 thinking 被禁用时清理历史消息
+    """
+    cleaned_messages = []
+    for msg in messages:
+        role = getattr(msg, "role", None) if hasattr(msg, "role") else (msg.get("role") if isinstance(msg, dict) else None)
+        content = getattr(msg, "content", None) if hasattr(msg, "content") else (msg.get("content") if isinstance(msg, dict) else None)
+        
+        if role == "assistant" and content:
+            if isinstance(content, str):
+                # 移除 <think>...</think> 标签
+                cleaned_content = re.sub(r'<think>.*?</think>\s*', '', content, flags=re.DOTALL | re.IGNORECASE)
+                cleaned_content = re.sub(r'<reasoning>.*?</reasoning>\s*', '', cleaned_content, flags=re.DOTALL | re.IGNORECASE)
+                cleaned_content = re.sub(r'<redacted_reasoning>.*?</redacted_reasoning>\s*', '', cleaned_content, flags=re.DOTALL | re.IGNORECASE)
+                
+                if isinstance(msg, dict):
+                    cleaned_msg = msg.copy()
+                    cleaned_msg["content"] = cleaned_content.strip()
+                    cleaned_messages.append(cleaned_msg)
+                else:
+                    # Pydantic 模型，创建新的字典
+                    cleaned_msg = {
+                        "role": role,
+                        "content": cleaned_content.strip()
+                    }
+                    # 保留其他字段
+                    for attr in ["name", "tool_calls", "tool_call_id"]:
+                        val = getattr(msg, attr, None) if hasattr(msg, attr) else None
+                        if val is not None:
+                            cleaned_msg[attr] = val
+                    cleaned_messages.append(cleaned_msg)
+            elif isinstance(content, list):
+                # 过滤掉 thinking 类型的内容块
+                cleaned_parts = [
+                    item for item in content
+                    if not (isinstance(item, dict) and item.get("type") in ("thinking", "redacted_thinking"))
+                ]
+                if isinstance(msg, dict):
+                    cleaned_msg = msg.copy()
+                    cleaned_msg["content"] = cleaned_parts
+                    cleaned_messages.append(cleaned_msg)
+                else:
+                    cleaned_msg = {
+                        "role": role,
+                        "content": cleaned_parts
+                    }
+                    for attr in ["name", "tool_calls", "tool_call_id"]:
+                        val = getattr(msg, attr, None) if hasattr(msg, attr) else None
+                        if val is not None:
+                            cleaned_msg[attr] = val
+                    cleaned_messages.append(cleaned_msg)
+            else:
+                cleaned_messages.append(msg)
+        else:
+            cleaned_messages.append(msg)
+    
+    return cleaned_messages
+
+
+def validate_tool_call(function_call: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    验证并清理工具调用
+    返回: (is_valid, error_message, cleaned_function_call)
+    """
+    name = function_call.get("name", "")
+    args = function_call.get("args", {})
+    
+    # 验证工具名称
+    is_valid_name, sanitized_name = validate_tool_name(name)
+    if not is_valid_name:
+        log.warning(f"[ANTIGRAVITY] Invalid tool name '{name}', sanitized to '{sanitized_name}'")
+    
+    # 验证参数
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = {"query": args}
+    
+    cleaned = {
+        "id": function_call.get("id", f"call_{uuid.uuid4().hex[:24]}"),
+        "name": sanitized_name,
+        "args": args
+    }
+    
+    return True, "", cleaned
 
 
 # 模型名称映射
@@ -116,9 +225,17 @@ def extract_images_from_content(content: Any) -> Dict[str, Any]:
     return result
 
 
-def openai_messages_to_antigravity_contents(messages: List[Any]) -> List[Dict[str, Any]]:
+def openai_messages_to_antigravity_contents(
+    messages: List[Any],
+    enable_thinking: bool = False,
+    tools: Optional[List[Any]] = None
+) -> List[Dict[str, Any]]:
     """
     将 OpenAI 消息格式转换为 Antigravity contents 格式
+    
+    增强功能：
+    - 支持 thinking block 处理
+    - 支持工具定义传递
     """
     contents = []
     system_messages = []
@@ -236,6 +353,11 @@ def gemini_contents_to_antigravity_contents(gemini_contents: List[Dict[str, Any]
 def convert_openai_tools_to_antigravity(tools: Optional[List[Any]]) -> Optional[List[Dict[str, Any]]]:
     """
     将 OpenAI 工具定义转换为 Antigravity 格式
+    
+    增强功能：
+    - 支持 custom 格式工具转换
+    - 支持扁平格式工具（带 name 和 input_schema）
+    - 更完整的 JSON Schema 字段清理
     """
     if not tools:
         return None
@@ -252,7 +374,10 @@ def convert_openai_tools_to_antigravity(tools: Optional[List[Any]]) -> Optional[
         'propertyNames', 'if', 'then', 'else',
         'contentEncoding', 'contentMediaType',
         'additionalProperties', 'minLength', 'maxLength',
-        'minItems', 'maxItems', 'uniqueItems'
+        'minItems', 'maxItems', 'uniqueItems',
+        # 额外添加的字段
+        'format', 'pattern', 'minimum', 'maximum',
+        'multipleOf', 'nullable', 'deprecated'
     }
 
     def clean_parameters(obj):
@@ -272,27 +397,88 @@ def convert_openai_tools_to_antigravity(tools: Optional[List[Any]]) -> Optional[
     function_declarations = []
 
     for tool in tools:
-        tool_type = getattr(tool, "type", "function")
+        # 获取工具类型
+        if isinstance(tool, dict):
+            tool_type = tool.get("type", "function")
+        else:
+            tool_type = getattr(tool, "type", "function")
+        
+        # 处理 custom 格式工具（来自 Cursor 等 IDE）
+        if tool_type == "custom":
+            if isinstance(tool, dict):
+                custom_data = tool.get("custom", {})
+            else:
+                custom_data = getattr(tool, "custom", {})
+            
+            if isinstance(custom_data, dict):
+                func_name = custom_data.get("name")
+                if func_name:
+                    func_desc = custom_data.get("description", "")
+                    input_schema = custom_data.get("input_schema", {})
+                    
+                    # 转换 input_schema 为 parameters
+                    if isinstance(input_schema, dict):
+                        func_params = input_schema
+                    else:
+                        func_params = {}
+                    
+                    cleaned_params = clean_parameters(func_params)
+                    
+                    function_declarations.append({
+                        "name": func_name,
+                        "description": func_desc,
+                        "parameters": cleaned_params
+                    })
+                    continue
+        
+        # 处理扁平格式工具（直接带 name 和 input_schema）
+        if isinstance(tool, dict) and "name" in tool and "input_schema" in tool:
+            func_name = tool.get("name")
+            func_desc = tool.get("description", "")
+            func_params = tool.get("input_schema", {})
+            
+            if hasattr(func_params, "dict") or hasattr(func_params, "model_dump"):
+                func_params = model_to_dict(func_params)
+            
+            cleaned_params = clean_parameters(func_params)
+            
+            function_declarations.append({
+                "name": func_name,
+                "description": func_desc,
+                "parameters": cleaned_params
+            })
+            continue
+        
+        # 处理标准 function 格式
         if tool_type == "function":
-            function = getattr(tool, "function", None)
+            if isinstance(tool, dict):
+                function = tool.get("function", {})
+            else:
+                function = getattr(tool, "function", None)
+            
             if function:
-                func_name = function.get("name")
-                assert func_name is not None, "Function name is required"
-                func_desc = function.get("description", "")
-                func_params = function.get("parameters", {})
+                if isinstance(function, dict):
+                    func_name = function.get("name")
+                    func_desc = function.get("description", "")
+                    func_params = function.get("parameters", {})
+                else:
+                    func_name = getattr(function, "name", None)
+                    func_desc = getattr(function, "description", "")
+                    func_params = getattr(function, "parameters", {})
+                
+                if func_name:
+                    # 转换为字典（如果是 Pydantic 模型）
+                    if hasattr(func_params, "dict") or hasattr(func_params, "model_dump"):
+                        func_params = model_to_dict(func_params)
 
-                # 转换为字典（如果是 Pydantic 模型）
-                if hasattr(func_params, "dict") or hasattr(func_params, "model_dump"):
-                    func_params = model_to_dict(func_params)
+                    # 清理参数
+                    cleaned_params = clean_parameters(func_params)
 
-                # 清理参数
-                cleaned_params = clean_parameters(func_params)
-
-                function_declarations.append({
-                    "name": func_name,
-                    "description": func_desc,
-                    "parameters": cleaned_params
-                })
+                    function_declarations.append({
+                        "name": func_name,
+                        "description": func_desc,
+                        "parameters": cleaned_params
+                    })
 
     if function_declarations:
         return [{"functionDeclarations": function_declarations}]
@@ -389,19 +575,43 @@ def prepare_image_request(request_body: Dict[str, Any], model: str) -> Dict[str,
 
 
 
-def convert_to_openai_tool_call(function_call: Dict[str, Any]) -> Dict[str, Any]:
+def convert_to_openai_tool_call(function_call: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
     """
     将 Antigravity functionCall 转换为 OpenAI tool_call，使用 OpenAIToolCall 模型
+    
+    Args:
+        function_call: Antigravity 格式的函数调用
+        index: 工具调用索引（用于流式响应）
+    
+    增强功能：
+    - 支持 index 参数用于流式响应
+    - 移除 None 值以保持输出清洁
     """
+    tool_call_id = function_call.get("id", f"call_{uuid.uuid4().hex[:24]}")
+    func_name = function_call.get("name", "")
+    func_args = function_call.get("args", {})
+    
+    # 确保 args 是有效的 JSON 字符串
+    if isinstance(func_args, dict):
+        args_str = json.dumps(func_args)
+    elif isinstance(func_args, str):
+        args_str = func_args
+    else:
+        args_str = "{}"
+    
     tool_call = OpenAIToolCall(
-        id=function_call.get("id", f"call_{uuid.uuid4().hex[:24]}"),
+        id=tool_call_id,
         type="function",
         function=OpenAIToolFunction(
-            name=function_call.get("name", ""),
-            arguments=json.dumps(function_call.get("args", {}))
-        )
+            name=func_name,
+            arguments=args_str
+        ),
+        index=index
     )
-    return model_to_dict(tool_call)
+    
+    # 转换为字典并移除 None 值
+    result = model_to_dict(tool_call)
+    return {k: v for k, v in result.items() if v is not None}
 
 
 async def convert_antigravity_stream_to_openai(
@@ -411,23 +621,57 @@ async def convert_antigravity_stream_to_openai(
     model: str,
     request_id: str,
     credential_manager: Any,
-    credential_name: str
+    credential_name: str,
+    enable_cross_pool_fallback: bool = False,
+    original_request: Optional[Any] = None,
+    estimated_input_tokens: int = 0
 ):
     """
     将 Antigravity 流式响应转换为 OpenAI 格式的 SSE 流
+    
+    增强功能：
+    - 详细的状态跟踪（SSE行数、发送块数、工具调用数等）
+    - 处理 cachedContentTokenCount 以获得更准确的 token 使用量
+    - 增强的错误处理（SAFETY、RECITATION 等 finish_reason）
+    - 上下文超限时的 fallback 机制
+    - 确保 finish_reason 始终被发送
 
     Args:
         lines_generator: 行生成器 (已经过滤的 SSE 行)
+        stream_ctx: 流上下文
+        client: HTTP 客户端
+        model: 模型名称
+        request_id: 请求 ID
+        credential_manager: 凭证管理器
+        credential_name: 凭证名称
+        enable_cross_pool_fallback: 是否启用跨池 fallback
+        original_request: 原始请求对象（用于 fallback）
+        estimated_input_tokens: 预估的输入 token 数
     """
+    # 增强的状态跟踪
     state = {
         "thinking_started": False,
         "tool_calls": [],
         "content_buffer": "",
         "thinking_buffer": "",
-        "success_recorded": False
+        "success_recorded": False,
+        # 新增状态跟踪
+        "sse_lines_received": 0,
+        "chunks_sent": 0,
+        "tool_calls_sent": False,
+        "finish_reason_sent": False,
+        "has_valid_content": False,
+        "empty_parts_count": 0,
+        "last_usage_metadata": None,
+        "actual_prompt_tokens": 0,
+        "cached_content_tokens": 0
     }
 
     created = int(time.time())
+    
+    # 上下文超限阈值
+    ACTUAL_PROCESSED_TOKENS_THRESHOLD = 900000  # 实际处理的 token 阈值
+    ESTIMATED_TOKENS_THRESHOLD = 800000  # 预估 token 阈值
 
     try:
         def build_content_chunk(content: str) -> str:
@@ -442,6 +686,41 @@ async def convert_antigravity_stream_to_openai(
                     "finish_reason": None
                 }]
             }
+            state["chunks_sent"] += 1
+            state["has_valid_content"] = True
+            return f"data: {json.dumps(chunk)}\n\n"
+
+        def build_error_chunk(error_message: str) -> str:
+            """构建错误消息块"""
+            chunk = {
+                "id": request_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": error_message},
+                    "finish_reason": None
+                }]
+            }
+            return f"data: {json.dumps(chunk)}\n\n"
+
+        def build_finish_chunk(finish_reason: str, usage: Optional[Dict] = None) -> str:
+            """构建结束块"""
+            chunk = {
+                "id": request_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": finish_reason
+                }]
+            }
+            if usage:
+                chunk["usage"] = usage
+            state["finish_reason_sent"] = True
             return f"data: {json.dumps(chunk)}\n\n"
 
         def flush_thinking_buffer() -> Optional[str]:
@@ -458,6 +737,8 @@ async def convert_antigravity_stream_to_openai(
             if not line or not line.startswith("data: "):
                 continue
 
+            state["sse_lines_received"] += 1
+
             # 记录第一次成功响应
             if not state["success_recorded"]:
                 if credential_name and credential_manager:
@@ -470,8 +751,17 @@ async def convert_antigravity_stream_to_openai(
             except:
                 continue
 
+            # 提取 response 和 candidates
+            response = data.get("response", {})
+            candidates = response.get("candidates", [{}])
+            candidate = candidates[0] if candidates else {}
+            
             # 提取 parts
-            parts = data.get("response", {}).get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            parts = candidate.get("content", {}).get("parts", [])
+            
+            # 跟踪空 parts
+            if not parts:
+                state["empty_parts_count"] += 1
 
             for part in parts:
                 # 处理思考内容
@@ -538,20 +828,36 @@ async def convert_antigravity_stream_to_openai(
 
                 # 处理工具调用
                 elif "functionCall" in part:
-                    tool_call = convert_to_openai_tool_call(part["functionCall"])
-                    # 在流式响应中,每个 tool_call 需要包含 index 字段
-                    tool_call["index"] = len(state["tool_calls"])
-                    state["tool_calls"].append(tool_call)
+                    try:
+                        # 验证并净化工具调用
+                        validated_call = validate_tool_call({"functionCall": part["functionCall"]})
+                        function_call = validated_call["functionCall"]
+                        
+                        tool_call = convert_to_openai_tool_call(function_call, index=len(state["tool_calls"]))
+                        state["tool_calls"].append(tool_call)
+                        state["has_valid_content"] = True
+                    except Exception as e:
+                        log.warning(f"[Stream] 工具调用验证失败: {e}")
+                        # 尝试使用原始数据
+                        tool_call = convert_to_openai_tool_call(part["functionCall"], index=len(state["tool_calls"]))
+                        state["tool_calls"].append(tool_call)
+
+            # 提取 usage metadata（用于最终统计）
+            usage_metadata = response.get("usageMetadata", {})
+            if usage_metadata:
+                state["last_usage_metadata"] = usage_metadata
+                state["actual_prompt_tokens"] = usage_metadata.get("promptTokenCount", 0)
+                state["cached_content_tokens"] = usage_metadata.get("cachedContentTokenCount", 0)
 
             # 检查是否结束
-            finish_reason = data.get("response", {}).get("candidates", [{}])[0].get("finishReason")
+            finish_reason = candidate.get("finishReason")
             if finish_reason:
                 thinking_block = flush_thinking_buffer()
                 if thinking_block:
                     yield build_content_chunk(thinking_block)
 
-                # 发送工具调用
-                if state["tool_calls"]:
+                # 发送工具调用（如果有且尚未发送）
+                if state["tool_calls"] and not state["tool_calls_sent"]:
                     chunk = {
                         "id": request_id,
                         "object": "chat.completion.chunk",
@@ -564,22 +870,60 @@ async def convert_antigravity_stream_to_openai(
                         }]
                     }
                     yield f"data: {json.dumps(chunk)}\n\n"
+                    state["tool_calls_sent"] = True
 
-                # 发送使用统计
-                usage_metadata = data.get("response", {}).get("usageMetadata", {})
-                usage = {
-                    "prompt_tokens": usage_metadata.get("promptTokenCount", 0),
-                    "completion_tokens": usage_metadata.get("candidatesTokenCount", 0),
-                    "total_tokens": usage_metadata.get("totalTokenCount", 0)
-                }
+                # 处理特殊的 finish_reason
+                if finish_reason in ("SAFETY", "RECITATION"):
+                    # 发送错误提示
+                    error_msg = f"\n\n[响应被截断: {finish_reason}]"
+                    if state["tool_calls"]:
+                        error_msg += "\n\n提示: 如果工具调用失败，请检查工具参数格式是否正确。"
+                    yield build_error_chunk(error_msg)
 
-                # 确定 finish_reason
+                # 计算 usage
+                if state["last_usage_metadata"]:
+                    usage = {
+                        "prompt_tokens": state["last_usage_metadata"].get("promptTokenCount", 0),
+                        "completion_tokens": state["last_usage_metadata"].get("candidatesTokenCount", 0),
+                        "total_tokens": state["last_usage_metadata"].get("totalTokenCount", 0)
+                    }
+                    # 添加缓存 token 信息（如果有）
+                    if state["cached_content_tokens"] > 0:
+                        usage["cached_tokens"] = state["cached_content_tokens"]
+                else:
+                    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+                # 确定 OpenAI 格式的 finish_reason
                 openai_finish_reason = "stop"
                 if state["tool_calls"]:
                     openai_finish_reason = "tool_calls"
                 elif finish_reason == "MAX_TOKENS":
                     openai_finish_reason = "length"
+                elif finish_reason in ("SAFETY", "RECITATION"):
+                    openai_finish_reason = "content_filter"
 
+                # 检查是否需要上下文超限提示
+                actual_processed = state["actual_prompt_tokens"] - state["cached_content_tokens"]
+                if (actual_processed > ACTUAL_PROCESSED_TOKENS_THRESHOLD or 
+                    estimated_input_tokens > ESTIMATED_TOKENS_THRESHOLD):
+                    # 上下文可能过长，发送简化的错误消息
+                    if not state["has_valid_content"]:
+                        error_msg = "\n\n[上下文过长，请精简对话历史或使用 summarize 功能]"
+                        yield build_error_chunk(error_msg)
+                        openai_finish_reason = "length"  # 触发 Cursor 的 summarize 机制
+
+                yield build_finish_chunk(openai_finish_reason, usage)
+
+        # 最终 fallback：确保 finish_reason 始终被发送
+        if not state["finish_reason_sent"]:
+            log.warning(f"[Stream] 流结束但未发送 finish_reason, sse_lines={state['sse_lines_received']}, chunks_sent={state['chunks_sent']}")
+            
+            # 如果没有收到任何有效内容，发送空响应
+            if not state["has_valid_content"] and state["sse_lines_received"] == 0:
+                yield build_content_chunk("[无响应内容]")
+            
+            # 发送工具调用（如果有）
+            if state["tool_calls"] and not state["tool_calls_sent"]:
                 chunk = {
                     "id": request_id,
                     "object": "chat.completion.chunk",
@@ -587,26 +931,25 @@ async def convert_antigravity_stream_to_openai(
                     "model": model,
                     "choices": [{
                         "index": 0,
-                        "delta": {},
-                        "finish_reason": openai_finish_reason
-                    }],
-                    "usage": usage
+                        "delta": {"tool_calls": state["tool_calls"]},
+                        "finish_reason": None
+                    }]
                 }
                 yield f"data: {json.dumps(chunk)}\n\n"
+            
+            finish_reason = "tool_calls" if state["tool_calls"] else "stop"
+            yield build_finish_chunk(finish_reason)
 
         # 发送结束标记
         yield "data: [DONE]\n\n"
 
     except Exception as e:
         log.error(f"[ANTIGRAVITY] Streaming error: {e}")
-        error_response = {
-            "error": {
-                "message": str(e),
-                "type": "api_error",
-                "code": 500
-            }
-        }
-        yield f"data: {json.dumps(error_response)}\n\n"
+        # 确保发送 finish_reason
+        if not state["finish_reason_sent"]:
+            yield build_error_chunk(f"\n\n[流处理错误: {str(e)}]")
+            yield build_finish_chunk("stop")
+            yield "data: [DONE]\n\n"
     finally:
         # 确保清理所有资源
         try:
@@ -818,6 +1161,12 @@ async def chat_completions(
 ):
     """
     处理 OpenAI 格式的聊天完成请求，转换为 Antigravity API
+    
+    增强功能：
+    - 客户端检测（Cursor 等 IDE 兼容性）
+    - 工具格式清理和验证
+    - 上下文 token 估算
+    - 跨池 fallback 支持
     """
     # 获取原始请求数据
     try:
@@ -825,6 +1174,76 @@ async def chat_completions(
     except Exception as e:
         log.error(f"Failed to parse JSON request: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+
+    # 检测客户端类型
+    user_agent = request.headers.get("user-agent", "")
+    client_info = get_client_info(user_agent)
+    is_cursor_client = client_info.get("is_cursor", False)
+    enable_cross_pool_fallback = client_info.get("enable_cross_pool_fallback", False)
+    
+    log.debug(f"[ANTIGRAVITY] Client: {client_info.get('client_name', 'unknown')}, cross_pool_fallback={enable_cross_pool_fallback}")
+
+    # 预处理工具定义（在创建请求对象之前）
+    raw_tools = raw_data.get("tools", None)
+    if raw_tools:
+        cleaned_tools = []
+        for tool in raw_tools:
+            if isinstance(tool, dict):
+                tool_type = tool.get("type", "function")
+                
+                # 处理 custom 格式工具（来自 Cursor 等 IDE）
+                if tool_type == "custom":
+                    custom_data = tool.get("custom", {})
+                    if isinstance(custom_data, dict) and custom_data.get("name"):
+                        # 转换为标准 function 格式
+                        input_schema = custom_data.get("input_schema", {})
+                        cleaned_schema = clean_tool_schema(input_schema)
+                        cleaned_tools.append({
+                            "type": "function",
+                            "function": {
+                                "name": custom_data.get("name"),
+                                "description": custom_data.get("description", ""),
+                                "parameters": cleaned_schema
+                            }
+                        })
+                        continue
+                
+                # 处理扁平格式工具（直接带 name 和 input_schema）
+                if "name" in tool and "input_schema" in tool:
+                    input_schema = tool.get("input_schema", {})
+                    cleaned_schema = clean_tool_schema(input_schema)
+                    cleaned_tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": tool.get("name"),
+                            "description": tool.get("description", ""),
+                            "parameters": cleaned_schema
+                        }
+                    })
+                    continue
+                
+                # 标准 function 格式 - 清理 schema
+                if tool_type == "function":
+                    function = tool.get("function", {})
+                    if function.get("name"):
+                        params = function.get("parameters", {})
+                        cleaned_schema = clean_tool_schema(params)
+                        cleaned_tools.append({
+                            "type": "function",
+                            "function": {
+                                "name": function.get("name"),
+                                "description": function.get("description", ""),
+                                "parameters": cleaned_schema
+                            }
+                        })
+                        continue
+                
+                # 其他格式直接保留
+                cleaned_tools.append(tool)
+            else:
+                cleaned_tools.append(tool)
+        
+        raw_data["tools"] = cleaned_tools if cleaned_tools else None
 
     # 创建请求对象
     try:
@@ -868,12 +1287,16 @@ async def chat_completions(
 
     log.info(f"[ANTIGRAVITY] Request: model={model} -> {actual_model}, stream={stream}, thinking={enable_thinking}, anti_truncation={use_anti_truncation}")
 
-    # 转换消息格式
+    # 转换消息格式（传递 thinking 和 tools 参数）
     try:
-        contents = openai_messages_to_antigravity_contents(messages)
+        contents = openai_messages_to_antigravity_contents(messages, enable_thinking=enable_thinking, tools=tools)
     except Exception as e:
         log.error(f"Failed to convert messages: {e}")
         raise HTTPException(status_code=500, detail=f"Message conversion failed: {str(e)}")
+
+    # 估算输入 token 数（用于上下文超限检测）- 使用转换后的 contents
+    estimated_tokens = estimate_input_tokens(contents)
+    log.debug(f"[ANTIGRAVITY] Estimated input tokens: {estimated_tokens}")
 
     # 转换工具定义
     antigravity_tools = convert_openai_tools_to_antigravity(tools)
@@ -932,7 +1355,10 @@ async def chat_completions(
                     response, stream_ctx, client = resources
                     return StreamingResponse(
                         convert_antigravity_stream_to_openai(
-                            response, stream_ctx, client, model, request_id, cred_mgr, cred_name
+                            response, stream_ctx, client, model, request_id, cred_mgr, cred_name,
+                            enable_cross_pool_fallback=enable_cross_pool_fallback,
+                            original_request=request_data,
+                            estimated_input_tokens=estimated_tokens
                         ),
                         media_type="text/event-stream"
                     )
@@ -952,7 +1378,10 @@ async def chat_completions(
             # response 现在是 filtered_lines 生成器
             return StreamingResponse(
                 convert_antigravity_stream_to_openai(
-                    response, stream_ctx, client, model, request_id, cred_mgr, cred_name
+                    response, stream_ctx, client, model, request_id, cred_mgr, cred_name,
+                    enable_cross_pool_fallback=enable_cross_pool_fallback,
+                    original_request=request_data,
+                    estimated_input_tokens=estimated_tokens
                 ),
                 media_type="text/event-stream"
             )

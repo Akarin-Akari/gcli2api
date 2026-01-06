@@ -41,6 +41,7 @@ class OpenAIToolCall(BaseModel):
     id: str
     type: str = "function"
     function: OpenAIToolFunction
+    index: Optional[int] = None  # 用于流式响应的工具调用索引
 
 
 class OpenAITool(BaseModel):
