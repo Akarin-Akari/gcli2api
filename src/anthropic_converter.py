@@ -18,7 +18,7 @@ def _anthropic_debug_enabled() -> bool:
 
 def _is_non_whitespace_text(value: Any) -> bool:
     """
-    判断文本是否包含“非空白”内容。
+    判断文本是否包含"非空白"内容。
 
     说明：下游（Antigravity/Claude 兼容层）会对纯 text 内容块做校验：
     - text 不能为空字符串
@@ -33,6 +33,141 @@ def _is_non_whitespace_text(value: Any) -> bool:
         return bool(str(value).strip())
     except Exception:
         return False
+
+
+def _is_thinking_disabled(thinking_value: Any) -> bool:
+    """判断 thinking 是否被显式禁用"""
+    if thinking_value is None:
+        return False
+    if isinstance(thinking_value, bool):
+        return not thinking_value
+    if isinstance(thinking_value, dict):
+        return thinking_value.get("type") == "disabled"
+    return False
+
+
+def _should_strip_thinking_blocks(payload: Dict[str, Any]) -> bool:
+    """
+    判断是否应该在请求转换时清理 thinking blocks。
+    清理条件（满足任一即清理）：
+    1. thinking 被显式禁用（type: disabled 或 thinking: false）
+    2. thinking=null（不下发 thinkingConfig，下游视为禁用）
+    3. 没有 thinking 字段（不下发 thinkingConfig，下游视为禁用）
+    4. thinking 启用但历史消息不满足约束（不下发 thinkingConfig，下游视为禁用）
+
+    核心原则：只要不会下发 thinkingConfig，就应该清理 thinking blocks，
+    避免下游报错 "When thinking is disabled, an assistant message cannot contain thinking"
+    """
+    # 没有 thinking 字段 → 不下发 thinkingConfig → 需要清理
+    if "thinking" not in payload:
+        return True
+
+    thinking_value = payload.get("thinking")
+
+    # thinking=null → 不下发 thinkingConfig → 需要清理
+    if thinking_value is None:
+        return True
+
+    # thinking 被显式禁用 → 需要清理
+    if _is_thinking_disabled(thinking_value):
+        return True
+
+    # thinking 启用，检查是否会实际下发 thinkingConfig
+    # 如果历史消息不满足约束，thinkingConfig 不会被下发
+    thinking_config = get_thinking_config(thinking_value)
+    include_thoughts = bool(thinking_config.get("includeThoughts", False))
+
+    if not include_thoughts:
+        # includeThoughts=False → 需要清理
+        return True
+
+    # 检查最后一条 assistant 消息的第一个 block 类型
+    messages = payload.get("messages") or []
+    last_assistant_first_block_type = None
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list) or not content:
+            continue
+        first_block = content[0]
+        if isinstance(first_block, dict):
+            last_assistant_first_block_type = first_block.get("type")
+        else:
+            last_assistant_first_block_type = None
+        break
+
+    # 如果最后一条 assistant 消息的第一个 block 不是 thinking/redacted_thinking，
+    # 则 thinkingConfig 不会被下发 → 需要清理
+    if last_assistant_first_block_type not in {None, "thinking", "redacted_thinking"}:
+        return True
+
+    # 检查 budget 是否会导致 thinkingConfig 不下发
+    max_tokens = payload.get("max_tokens")
+    if isinstance(max_tokens, int):
+        budget = thinking_config.get("thinkingBudget")
+        if isinstance(budget, int) and budget >= max_tokens:
+            adjusted_budget = max(0, max_tokens - 1)
+            if adjusted_budget <= 0:
+                # budget 无法调整 → thinkingConfig 不下发 → 需要清理
+                return True
+
+    # 其他情况：thinkingConfig 会被下发，不需要清理
+    return False
+
+
+def _strip_thinking_blocks_from_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    从消息列表中移除所有 thinking/redacted_thinking blocks。
+    当 thinking 被禁用时，历史消息中的 thinking blocks 会导致 400 错误：
+    "When thinking is disabled, an `assistant` message..."
+
+    此函数会：
+    1. 遍历所有消息
+    2. 对于 assistant 消息，移除 content 中的 thinking/redacted_thinking blocks
+    3. 保留其他所有内容（text, tool_use, tool_result 等）
+
+    注意：thinking blocks 只是模型的内部推理过程，移除它们不会影响对话的核心内容。
+    """
+    if not messages:
+        return messages
+
+    cleaned_messages = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            cleaned_messages.append(msg)
+            continue
+
+        role = msg.get("role")
+        content = msg.get("content")
+
+        # 只处理 assistant 消息的 content
+        if role != "assistant" or not isinstance(content, list):
+            cleaned_messages.append(msg)
+            continue
+
+        # 过滤掉 thinking 和 redacted_thinking blocks
+        cleaned_content = []
+        for item in content:
+            if isinstance(item, dict):
+                item_type = item.get("type")
+                if item_type in ("thinking", "redacted_thinking"):
+                    # 跳过 thinking blocks
+                    continue
+            cleaned_content.append(item)
+
+        # 如果清理后 content 为空，添加一个空文本块避免格式错误
+        if not cleaned_content:
+            cleaned_content = [{"type": "text", "text": "..."}]
+
+        # 创建新的消息对象
+        cleaned_msg = msg.copy()
+        cleaned_msg["content"] = cleaned_content
+        cleaned_messages.append(cleaned_msg)
+
+    return cleaned_messages
 
 
 def get_thinking_config(thinking: Optional[Union[bool, Dict[str, Any]]]) -> Dict[str, Any]:
@@ -92,18 +227,26 @@ def map_claude_model_to_gemini(claude_model: str) -> str:
         return "gemini-2.5-flash"
 
     supported_models = {
+        # Gemini 系列
         "gemini-2.5-flash",
         "gemini-2.5-flash-thinking",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash-image",
         "gemini-2.5-pro",
+        "gemini-3-flash",
         "gemini-3-pro-low",
         "gemini-3-pro-high",
         "gemini-3-pro-image",
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash-image",
+        # Claude 系列
         "claude-sonnet-4-5",
         "claude-sonnet-4-5-thinking",
         "claude-opus-4-5-thinking",
+        # GPT 系列
         "gpt-oss-120b-medium",
+        # 内部测试模型（预留）
+        "rev19-uic3-1p",
+        "chat_20706",
+        "chat_23310",
     }
 
     if claude_model in supported_models:
@@ -204,6 +347,32 @@ def clean_json_schema(schema: Any) -> Any:
 
         if key == "description" and validations:
             cleaned[key] = f"{value} ({', '.join(validations)})"
+        elif key == "properties":
+            # 特殊处理 properties：确保每个属性的值都是完整的 Schema 对象
+            if isinstance(value, dict):
+                cleaned_properties: Dict[str, Any] = {}
+                for prop_name, prop_schema in value.items():
+                    if isinstance(prop_schema, dict):
+                        # 递归清理属性 Schema
+                        cleaned_prop = clean_json_schema(prop_schema)
+                        # 如果属性类型是 object，确保它是一个完整的 Schema 对象
+                        if cleaned_prop.get("type") == "object":
+                            # 确保 object 类型有完整的 Schema 结构
+                            if "properties" not in cleaned_prop:
+                                cleaned_prop["properties"] = {}
+                            # 确保有 type 字段
+                            if "type" not in cleaned_prop:
+                                cleaned_prop["type"] = "object"
+                        cleaned_properties[prop_name] = cleaned_prop
+                    elif isinstance(prop_schema, str) and prop_schema == "object":
+                        # 如果值是字符串 "object"，转换为完整的 Schema 对象
+                        cleaned_properties[prop_name] = {"type": "object", "properties": {}}
+                    else:
+                        # 其他情况直接使用原值（但应该不会发生）
+                        cleaned_properties[prop_name] = prop_schema
+                cleaned[key] = cleaned_properties
+            else:
+                cleaned[key] = value
         elif isinstance(value, dict):
             cleaned[key] = clean_json_schema(value)
         elif isinstance(value, list):
@@ -217,6 +386,12 @@ def clean_json_schema(schema: Any) -> Any:
     # 与 `src/openai_transfer.py::_clean_schema_for_gemini` 保持一致：
     # 如果有 properties 但没有显式 type，则补齐为 object，避免下游校验失败。
     if "properties" in cleaned and "type" not in cleaned:
+        cleaned["type"] = "object"
+
+    # 修 Cursor 兼容性：确保 input_schema 始终有 type 字段
+    # 错误 "tools.0.custom.input_schema.type: Field required" 表明下游要求 type 必填
+    # 如果 cleaned 非空但没有 type，默认补齐为 "object"
+    if cleaned and "type" not in cleaned:
         cleaned["type"] = "object"
 
     return cleaned
@@ -278,6 +453,19 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
         include_thinking: 是否包含 thinking 块（当请求未启用 thinking 时应设为 False）
     """
     contents: List[Dict[str, Any]] = []
+
+    # 第一遍：建立 tool_use_id -> name 的映射
+    # Anthropic 的 tool_result 消息不包含 name 字段，但 Gemini 的 functionResponse 需要 name
+    tool_use_id_to_name: Dict[str, str] = {}
+    for msg in messages:
+        raw_content = msg.get("content", "")
+        if isinstance(raw_content, list):
+            for item in raw_content:
+                if isinstance(item, dict) and item.get("type") == "tool_use":
+                    tool_id = item.get("id")
+                    tool_name = item.get("name")
+                    if tool_id and tool_name:
+                        tool_use_id_to_name[str(tool_id)] = str(tool_name)
 
     for msg in messages:
         role = msg.get("role", "user")
@@ -353,22 +541,33 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
                             }
                         )
                 elif item_type == "tool_use":
-                    parts.append(
-                        {
-                            "functionCall": {
-                                "id": item.get("id"),
-                                "name": item.get("name"),
-                                "args": item.get("input", {}) or {},
-                            }
-                        }
-                    )
+                    # Gemini 3 要求 functionCall 必须包含 thoughtSignature
+                    # 参考: https://ai.google.dev/gemini-api/docs/thought-signatures
+                    # 如果没有 signature，使用 dummy 值绕过验证
+                    fc_part: Dict[str, Any] = {
+                        "functionCall": {
+                            "id": item.get("id"),
+                            "name": item.get("name"),
+                            "args": item.get("input", {}) or {},
+                        },
+                        # 添加 dummy thoughtSignature 以满足 Gemini 3 的要求（在 part 级别）
+                        "thoughtSignature": "skip_thought_signature_validator",
+                    }
+                    parts.append(fc_part)
                 elif item_type == "tool_result":
                     output = _extract_tool_result_output(item.get("content"))
+                    tool_use_id = item.get("tool_use_id")
+                    # 从映射中获取 name，如果找不到则使用 tool_use_id 作为兜底
+                    # Gemini 要求 functionResponse.name 必须非空
+                    tool_name = tool_use_id_to_name.get(str(tool_use_id), "") if tool_use_id else ""
+                    if not tool_name:
+                        # 兜底：使用 tool_use_id 作为 name，避免空值导致 400 错误
+                        tool_name = str(tool_use_id) if tool_use_id else "unknown_tool"
                     parts.append(
                         {
                             "functionResponse": {
-                                "id": item.get("tool_use_id"),
-                                "name": item.get("name", ""),
+                                "id": tool_use_id,
+                                "name": tool_name,
                                 "response": {"output": output},
                             }
                         }
@@ -605,6 +804,18 @@ def convert_anthropic_request_to_antigravity_components(payload: Dict[str, Any])
     messages = payload.get("messages") or []
     if not isinstance(messages, list):
         messages = []
+
+    # 🔧 优化：提前清理 thinking blocks，避免下游报错后才处理
+    # 核心原则：只要不会下发 thinkingConfig，就应该清理 thinking blocks
+    # 这样可以避免浪费 token（之前是下游报错后才清理并重试）
+    if _should_strip_thinking_blocks(payload):
+        original_count = len(messages)
+        messages = _strip_thinking_blocks_from_messages(messages)
+        if _anthropic_debug_enabled():
+            log.info(
+                f"[ANTHROPIC][thinking] 检测到 thinkingConfig 不会下发，已提前清理历史消息中的 thinking blocks "
+                f"(messages={original_count})"
+            )
 
     # 先构建 generation_config 以确定是否应包含 thinking
     generation_config, should_include_thinking = build_generation_config(payload)
