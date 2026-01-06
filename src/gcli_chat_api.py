@@ -35,6 +35,11 @@ from .httpx_client import create_streaming_client_with_kwargs, http_client
 from .utils import get_user_agent, parse_quota_reset_timestamp
 
 
+class NonRetryableError(Exception):
+    """不可重试的错误，用于 400 等客户端错误，避免外层 except 继续重试"""
+    pass
+
+
 def _filter_thoughts_from_response(response_data: dict) -> dict:
     """
     Filter out thoughts from response data if configured to do so.
@@ -256,6 +261,11 @@ async def send_gemini_request(
     """
     Send a request to Google's Gemini API.
 
+    重试策略优化：
+    - 5xx 错误：用同一个凭证重试（服务端临时问题，切换凭证没意义）
+    - 429 限流：切换凭证重试，但最大 3 次（避免快速消耗所有凭证额度）
+    - 400 错误：不重试（客户端参数错误）
+
     Args:
         payload: The request payload in Gemini format
         is_streaming: Whether this is a streaming request
@@ -264,9 +274,8 @@ async def send_gemini_request(
     Returns:
         FastAPI Response object
     """
-    # 获取429重试配置
-    max_retries = await get_retry_429_max_retries()
-    retry_429_enabled = await get_retry_429_enabled()
+    # 获取重试配置
+    retry_enabled = await get_retry_429_enabled()
     retry_interval = await get_retry_429_interval()
 
     # 动态确定API端点和payload格式
@@ -284,16 +293,37 @@ async def send_gemini_request(
     # 获取模型组（用于分组 CD）
     model_group = get_model_group(model_name)
 
-    for attempt in range(max_retries + 1):
-        # 每次请求都获取新的凭证（传递模型组）
-        try:
-            credential_result = await credential_manager.get_valid_credential(
-                is_antigravity=False, model_key=model_group
-            )
-            if not credential_result:
-                return _create_error_response("No valid credentials available", 500)
+    # 429 限流时切换凭证的最大次数（避免快速消耗所有凭证额度）
+    max_credential_switches = 3
+    credential_switch_count = 0
 
-            current_file, credential_data = credential_result
+    # 5xx 错误时用同一凭证重试的最大次数
+    max_same_cred_retries = 2
+
+    # 当前使用的凭证（5xx 错误时复用）
+    current_cred_result = None
+    same_cred_retry_count = 0
+
+    while True:
+        # 决定是否需要获取新凭证
+        need_new_credential = current_cred_result is None
+
+        if need_new_credential:
+            # 获取可用凭证（传递模型组）
+            try:
+                credential_result = await credential_manager.get_valid_credential(
+                    is_antigravity=False, model_key=model_group
+                )
+                if not credential_result:
+                    return _create_error_response("No valid credentials available", 500)
+
+                current_cred_result = credential_result
+                same_cred_retry_count = 0  # 重置同凭证重试计数
+            except Exception as e:
+                return _create_error_response(str(e), 500)
+
+        current_file, credential_data = current_cred_result
+        try:
             headers, final_payload, target_url = await _prepare_request_headers_and_payload(
                 payload, credential_data, target_url
             )
@@ -366,26 +396,59 @@ async def send_gemini_request(
                             except Exception as cleanup_err:
                                 log.debug(f"Error closing client: {cleanup_err}")
 
-                        # 使用统一的错误处理和重试逻辑
-                        should_retry = await _handle_error_with_retry(
-                            credential_manager,
-                            resp.status_code,
-                            current_file,
-                            retry_429_enabled,
-                            attempt,
-                            max_retries,
-                            retry_interval
-                        )
+                        # 400 错误 - 客户端参数错误，不重试
+                        if resp.status_code == 400:
+                            log.warning(f"[GCLI] 400 客户端错误，不重试 (model={model_name})")
+                            async def error_stream():
+                                error_response = {
+                                    "error": {
+                                        "message": f"API error: {resp.status_code}",
+                                        "type": "api_error",
+                                        "code": resp.status_code,
+                                    }
+                                }
+                                yield f"data: {json.dumps(error_response)}\n\n"
+                            return StreamingResponse(
+                                error_stream(),
+                                media_type="text/event-stream",
+                                status_code=resp.status_code,
+                            )
 
-                        if should_retry:
-                            # 继续重试（会在下次循环中自动获取新凭证）
-                            continue
+                        # 检查自动封禁
+                        if await _check_should_auto_ban(resp.status_code):
+                            await _handle_auto_ban(credential_manager, resp.status_code, current_file)
+                            # 自动封禁后，强制切换凭证重试（如果还有次数）
+                            if retry_enabled and credential_switch_count < max_credential_switches:
+                                credential_switch_count += 1
+                                current_cred_result = None  # 强制获取新凭证
+                                log.warning(f"[GCLI] 自动封禁触发，切换凭证重试 ({credential_switch_count}/{max_credential_switches})")
+                                await asyncio.sleep(retry_interval)
+                                continue
+
+                        # 429 错误处理
+                        if resp.status_code == 429:
+                            # 普通 429 限流 - 切换凭证重试，但有次数限制
+                            if retry_enabled and credential_switch_count < max_credential_switches:
+                                credential_switch_count += 1
+                                current_cred_result = None  # 强制获取新凭证
+                                log.warning(f"[GCLI] 429 限流，切换凭证重试 ({credential_switch_count}/{max_credential_switches})")
+                                await asyncio.sleep(retry_interval)
+                                continue
+                            else:
+                                log.warning(f"[GCLI] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，不再重试")
+
+                        # 5xx 错误 - 用同一凭证重试
+                        if resp.status_code >= 500:
+                            same_cred_retry_count += 1
+                            if retry_enabled and same_cred_retry_count <= max_same_cred_retries:
+                                log.warning(f"[GCLI] 5xx 服务端错误，用同一凭证重试 ({same_cred_retry_count}/{max_same_cred_retries})")
+                                await asyncio.sleep(retry_interval)
+                                continue
+                            else:
+                                log.warning(f"[GCLI] 5xx 服务端错误，已达到最大重试次数 ({max_same_cred_retries})，不再重试")
 
                         # 不需要重试，返回错误流
                         error_msg = f"API error: {resp.status_code}"
-                        if await _check_should_auto_ban(resp.status_code):
-                            error_msg += " (credential auto-banned)"
-
                         async def error_stream():
                             error_response = {
                                 "error": {
@@ -462,44 +525,58 @@ async def send_gemini_request(
                             current_file, False, 429 if status == 429 else status, cooldown_until, model_key=model_group
                         )
 
-                    # 使用统一的错误处理和重试逻辑
-                    should_retry = await _handle_error_with_retry(
-                        credential_manager,
-                        status,
-                        current_file,
-                        retry_429_enabled,
-                        attempt,
-                        max_retries,
-                        retry_interval
-                    )
+                    # 400 错误 - 客户端参数错误，不重试
+                    if status == 400:
+                        log.warning(f"[GCLI] 400 客户端错误，不重试 (model={model_name})")
+                        return _create_error_response(f"API error: {status}", status)
 
-                    if should_retry:
-                        # 继续重试（会在下次循环中自动获取新凭证）
-                        continue
+                    # 检查自动封禁
+                    if await _check_should_auto_ban(status):
+                        await _handle_auto_ban(credential_manager, status, current_file)
+                        # 自动封禁后，强制切换凭证重试（如果还有次数）
+                        if retry_enabled and credential_switch_count < max_credential_switches:
+                            credential_switch_count += 1
+                            current_cred_result = None  # 强制获取新凭证
+                            log.warning(f"[GCLI] 自动封禁触发，切换凭证重试 ({credential_switch_count}/{max_credential_switches})")
+                            await asyncio.sleep(retry_interval)
+                            continue
+
+                    # 429 错误处理
+                    if status == 429:
+                        # 普通 429 限流 - 切换凭证重试，但有次数限制
+                        if retry_enabled and credential_switch_count < max_credential_switches:
+                            credential_switch_count += 1
+                            current_cred_result = None  # 强制获取新凭证
+                            log.warning(f"[GCLI] 429 限流，切换凭证重试 ({credential_switch_count}/{max_credential_switches})")
+                            await asyncio.sleep(retry_interval)
+                            continue
+                        else:
+                            log.warning(f"[GCLI] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，不再重试")
+
+                    # 5xx 错误 - 用同一凭证重试
+                    if status >= 500:
+                        same_cred_retry_count += 1
+                        if retry_enabled and same_cred_retry_count <= max_same_cred_retries:
+                            log.warning(f"[GCLI] 5xx 服务端错误，用同一凭证重试 ({same_cred_retry_count}/{max_same_cred_retries})")
+                            await asyncio.sleep(retry_interval)
+                            continue
+                        else:
+                            log.warning(f"[GCLI] 5xx 服务端错误，已达到最大重试次数 ({max_same_cred_retries})，不再重试")
 
                     # 不需要重试，返回错误
-                    error_msg = f"{status} error, max retries reached"
-                    if await _check_should_auto_ban(status):
-                        error_msg = f"{status} error (credential auto-banned), max retries reached"
-                        log.error(f"[AUTO_BAN] {error_msg}")
-                    elif status == 429:
-                        error_msg = "429 rate limit exceeded, max retries reached"
-                        log.error("[RETRY] Max retries exceeded for 429 error")
-                    else:
-                        log.error(f"[RETRY] Max retries exceeded for error status {status}")
-
-                    return _create_error_response(error_msg, status)
+                    return _create_error_response(f"API error: {status}", status)
 
         except Exception as e:
-            if attempt < max_retries:
-                log.warning(
-                    f"[RETRY] Request failed with exception, retrying ({attempt + 1}/{max_retries}): {str(e)}"
-                )
+            # 网络错误等 - 用同一凭证重试
+            log.error(f"[GCLI] Request failed with credential {current_file}: {e}")
+            same_cred_retry_count += 1
+            if retry_enabled and same_cred_retry_count <= max_same_cred_retries:
+                log.warning(f"[GCLI] 网络错误，用同一凭证重试 ({same_cred_retry_count}/{max_same_cred_retries})")
                 await asyncio.sleep(retry_interval)
                 continue
-            else:
-                log.error(f"Request to Google API failed: {str(e)}")
-                return _create_error_response(f"Request failed: {str(e)}")
+
+            log.error(f"Request to Google API failed: {str(e)}")
+            return _create_error_response(f"Request failed: {str(e)}")
 
     # 如果循环结束仍未成功，返回错误
     return _create_error_response("Max retries exceeded", 429)
