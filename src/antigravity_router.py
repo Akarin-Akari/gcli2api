@@ -47,7 +47,7 @@ from .anti_truncation import (
 
 # ==================== 自定义模块导入 ====================
 # 这些模块提供了 Cursor IDE 兼容性和增强功能
-from .tool_cleaner import get_client_info, clean_tool_schema_for_gemini
+from .tool_cleaner import get_client_info, clean_json_schema_for_tool
 from .fallback_manager import (
     is_quota_exhausted_error, is_retryable_error, is_403_error,
     is_credential_unavailable_error, get_fallback_models
