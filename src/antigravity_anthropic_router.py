@@ -22,6 +22,128 @@ from .anthropic_converter import convert_anthropic_request_to_antigravity_compon
 from .anthropic_streaming import antigravity_sse_to_anthropic_sse
 from .token_estimator import estimate_input_tokens
 
+
+# ====================== 导入智能降级管理器 ======================
+from .fallback_manager import (
+    is_quota_exhausted_error,
+    is_retryable_error,
+    is_403_error,
+    is_credential_unavailable_error,
+    get_cross_pool_fallback,
+    is_haiku_model,
+    is_model_supported,
+    HAIKU_FALLBACK_TARGET,
+)
+
+
+def _get_fallback_models(model_name: str) -> list:
+    """
+    获取模型的降级链（使用新的跨池降级逻辑）
+    
+    注意：这个函数用于预计算降级目标，不会打印日志。
+    实际降级时会在错误处理中打印日志。
+    
+    Args:
+        model_name: 当前模型名
+        
+    Returns:
+        降级模型列表
+    """
+    fallback_list = []
+
+    # Haiku 模型特殊处理
+    if is_haiku_model(model_name):
+        fallback_list.append(HAIKU_FALLBACK_TARGET)
+        return fallback_list
+
+    # 获取跨池降级目标（使用 debug 级别日志，避免预计算时打印）
+    cross_pool_fallback = get_cross_pool_fallback(model_name, log_level="debug")
+    if cross_pool_fallback:
+        fallback_list.append(cross_pool_fallback)
+
+    return fallback_list
+
+
+def _should_fallback(error_msg: str) -> bool:
+    """
+    判断是否应该触发模型降级
+    
+    新逻辑：
+    - 只有额度用尽错误（429 + MODEL_CAPACITY_EXHAUSTED）才触发降级
+    - 400/普通429/5xx 错误应该重试，不触发降级
+    - 403 错误需要触发凭证验证
+    
+    Args:
+        error_msg: 错误消息
+        
+    Returns:
+        True 如果应该降级，False 如果应该重试或失败
+    """
+    # 只有额度用尽才触发降级
+    return is_quota_exhausted_error(error_msg)
+
+
+def _is_thinking_format_error(error_msg: str) -> bool:
+    """
+    检测是否是 thinking 格式相关的 400 错误。
+    这类错误通常包含以下关键词：
+    - "When thinking is disabled"
+    - "thinking block"
+    - "redacted_thinking"
+    """
+    error_lower = str(error_msg).lower()
+    thinking_keywords = [
+        "when thinking is disabled",
+        "thinking block",
+        "redacted_thinking",
+        "must start with a thinking block",
+        "expected `thinking`",
+    ]
+    return any(kw in error_lower for kw in thinking_keywords)
+
+
+def _strip_thinking_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    从请求 payload 中移除所有 thinking blocks。
+    用于 400 错误的保底重试。
+    """
+    if not payload:
+        return payload
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return payload
+
+    cleaned_messages = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            cleaned_messages.append(msg)
+            continue
+
+        role = msg.get("role")
+        content = msg.get("content")
+
+        if role != "assistant" or not isinstance(content, list):
+            cleaned_messages.append(msg)
+            continue
+
+        # 过滤 thinking blocks
+        cleaned_content = [
+            item for item in content
+            if not (isinstance(item, dict) and item.get("type") in ("thinking", "redacted_thinking"))
+        ]
+
+        if not cleaned_content:
+            cleaned_content = [{"type": "text", "text": "..."}]
+
+        cleaned_msg = msg.copy()
+        cleaned_msg["content"] = cleaned_content
+        cleaned_messages.append(cleaned_msg)
+
+    new_payload = payload.copy()
+    new_payload["messages"] = cleaned_messages
+    return new_payload
+
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
 
@@ -453,54 +575,146 @@ async def anthropic_messages(
     )
     _debug_log_downstream_request_body(request_body)
 
+    # 获取降级模型链
+    fallback_models = _get_fallback_models(str(model))
+    original_model = str(model)
+    
     if stream:
         message_id = f"msg_{uuid.uuid4().hex}"
-
-        try:
-            resources, cred_name, _ = await send_antigravity_request_stream(request_body, cred_mgr)
-            response, stream_ctx, client = resources
-        except Exception as e:
-            log.error(f"[ANTHROPIC] 下游流式请求失败: {e}")
-            return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
-
-        async def stream_generator():
+        
+        # 流式请求的降级逻辑
+        current_model = components["model"]
+        current_payload = payload.copy()
+        last_error = None
+        
+        for fallback_idx, fallback_model in enumerate(fallback_models):
             try:
-                # response 现在是 filtered_lines 生成器，直接使用
-                async for chunk in antigravity_sse_to_anthropic_sse(
-                    response,
-                    model=str(model),
-                    message_id=message_id,
-                    initial_input_tokens=estimated_tokens,
-                    credential_manager=cred_mgr,
-                    credential_name=cred_name,
-                ):
-                    yield chunk
-            finally:
-                try:
-                    await stream_ctx.__aexit__(None, None, None)
-                except Exception as e:
-                    log.debug(f"[ANTHROPIC] 关闭 stream_ctx 失败: {e}")
-                try:
-                    await client.aclose()
-                except Exception as e:
-                    log.debug(f"[ANTHROPIC] 关闭 client 失败: {e}")
+                # 如果是降级模型，更新请求体
+                if fallback_idx > 0:
+                    log.info(f"[ANTHROPIC] 流式请求降级: {current_model} -> {fallback_model}")
+                    current_payload["model"] = fallback_model
+                    current_model = fallback_model
+                    
+                    # 重新转换请求
+                    try:
+                        components = convert_anthropic_request_to_antigravity_components(current_payload)
+                    except Exception as e:
+                        log.error(f"[ANTHROPIC] 降级请求转换失败: {e}")
+                        continue
+                    
+                    request_body = build_antigravity_request_body(
+                        contents=components["contents"],
+                        model=components["model"],
+                        project_id=project_id,
+                        session_id=session_id,
+                        system_instruction=components["system_instruction"],
+                        tools=components["tools"],
+                        generation_config=components["generation_config"],
+                    )
+                
+                # 使用 thinking retry wrapper
+                resources, cred_name, _ = await _handle_request_with_thinking_retry(
+                    request_body, current_payload, cred_mgr, stream=True
+                )
+                response, stream_ctx, client = resources
+                
+                async def stream_generator():
+                    try:
+                        # response 现在是 filtered_lines 生成器，直接使用
+                        async for chunk in antigravity_sse_to_anthropic_sse(
+                            response,
+                            model=original_model,  # 返回原始请求的模型名
+                            message_id=message_id,
+                            initial_input_tokens=estimated_tokens,
+                            credential_manager=cred_mgr,
+                            credential_name=cred_name,
+                        ):
+                            yield chunk
+                    finally:
+                        try:
+                            await stream_ctx.__aexit__(None, None, None)
+                        except Exception as e:
+                            log.debug(f"[ANTHROPIC] 关闭 stream_ctx 失败: {e}")
+                        try:
+                            await client.aclose()
+                        except Exception as e:
+                            log.debug(f"[ANTHROPIC] 关闭 client 失败: {e}")
 
-        return StreamingResponse(stream_generator(), media_type="text/event-stream")
-
-    request_id = f"msg_{int(time.time() * 1000)}"
-    try:
-        response_data, _, _ = await send_antigravity_request_no_stream(request_body, cred_mgr)
-    except Exception as e:
-        log.error(f"[ANTHROPIC] 下游非流式请求失败: {e}")
+                return StreamingResponse(stream_generator(), media_type="text/event-stream")
+                
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+                
+                if _should_fallback(e, fallback_idx, fallback_models):
+                    log.warning(f"[ANTHROPIC] 流式请求失败，尝试降级: {error_str[:200]}")
+                    continue
+                else:
+                    log.error(f"[ANTHROPIC] 流式请求失败，无法降级: {error_str[:200]}")
+                    break
+        
+        # 所有降级尝试都失败
+        log.error(f"[ANTHROPIC] 所有流式请求尝试均失败: {last_error}")
         return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
 
-    anthropic_response = _convert_antigravity_response_to_anthropic_message(
-        response_data,
-        model=str(model),
-        message_id=request_id,
-        fallback_input_tokens=estimated_tokens,
-    )
-    return JSONResponse(content=anthropic_response)
+    # 非流式请求的降级逻辑
+    request_id = f"msg_{int(time.time() * 1000)}"
+    current_model = components["model"]
+    current_payload = payload.copy()
+    last_error = None
+    
+    for fallback_idx, fallback_model in enumerate(fallback_models):
+        try:
+            # 如果是降级模型，更新请求体
+            if fallback_idx > 0:
+                log.info(f"[ANTHROPIC] 非流式请求降级: {current_model} -> {fallback_model}")
+                current_payload["model"] = fallback_model
+                current_model = fallback_model
+                
+                # 重新转换请求
+                try:
+                    components = convert_anthropic_request_to_antigravity_components(current_payload)
+                except Exception as e:
+                    log.error(f"[ANTHROPIC] 降级请求转换失败: {e}")
+                    continue
+                
+                request_body = build_antigravity_request_body(
+                    contents=components["contents"],
+                    model=components["model"],
+                    project_id=project_id,
+                    session_id=session_id,
+                    system_instruction=components["system_instruction"],
+                    tools=components["tools"],
+                    generation_config=components["generation_config"],
+                )
+            
+            # 使用 thinking retry wrapper
+            response_data, _, _ = await _handle_request_with_thinking_retry(
+                request_body, current_payload, cred_mgr, stream=False
+            )
+            
+            anthropic_response = _convert_antigravity_response_to_anthropic_message(
+                response_data,
+                model=original_model,  # 返回原始请求的模型名
+                message_id=request_id,
+                fallback_input_tokens=estimated_tokens,
+            )
+            return JSONResponse(content=anthropic_response)
+            
+        except Exception as e:
+            last_error = e
+            error_str = str(e)
+            
+            if _should_fallback(e, fallback_idx, fallback_models):
+                log.warning(f"[ANTHROPIC] 非流式请求失败，尝试降级: {error_str[:200]}")
+                continue
+            else:
+                log.error(f"[ANTHROPIC] 非流式请求失败，无法降级: {error_str[:200]}")
+                break
+    
+    # 所有降级尝试都失败
+    log.error(f"[ANTHROPIC] 所有非流式请求尝试均失败: {last_error}")
+    return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
 
 
 @router.post("/antigravity/v1/messages/count_tokens")
