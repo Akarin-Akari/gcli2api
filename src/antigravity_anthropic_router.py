@@ -655,7 +655,9 @@ async def anthropic_messages(
         
         # 所有降级尝试都失败
         log.error(f"[ANTHROPIC] 所有流式请求尝试均失败: {last_error}")
-        return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
+        # 返回 503 以触发 Gateway fallback 到 Copilot
+        log.warning(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试，返回 503 触发 Gateway fallback 到 Copilot")
+        return _anthropic_error(status_code=503, message="All Antigravity quota pools exhausted. Gateway should route to Copilot.", error_type="api_error")
 
     # 非流式请求的降级逻辑
     request_id = f"msg_{int(time.time() * 1000)}"
@@ -714,7 +716,9 @@ async def anthropic_messages(
     
     # 所有降级尝试都失败
     log.error(f"[ANTHROPIC] 所有非流式请求尝试均失败: {last_error}")
-    return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
+    # 返回 503 以触发 Gateway fallback 到 Copilot
+    log.warning(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试，返回 503 触发 Gateway fallback 到 Copilot")
+    return _anthropic_error(status_code=503, message="All Antigravity quota pools exhausted. Gateway should route to Copilot.", error_type="api_error")
 
 
 @router.post("/antigravity/v1/messages/count_tokens")

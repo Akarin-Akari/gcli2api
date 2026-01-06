@@ -180,11 +180,19 @@ Previous tool calls failed due to invalid arguments. You MUST:
 IMPORTANT: If a tool call fails, check the parameter names above and try again with the EXACT names listed.
 """
 
+SEQUENTIAL_THINKING_PROMPT = """
+[IMPORTANT: Thinking Capability Redirection]
+Internal thinking/reasoning models are currently disabled or limited.
+For complex tasks requiring step-by-step analysis, planning, or reasoning, you MUST use the 'sequentialthinking' (or 'sequential_thinking') tool.
+Do NOT attempt to output <think> tags or raw reasoning text. Delegate all reasoning steps to the tool.
+"""
+
 
 def openai_messages_to_antigravity_contents(
     messages: List[Any],
     enable_thinking: bool = False,
-    tools: Optional[List[Any]] = None
+    tools: Optional[List[Any]] = None,
+    recommend_sequential_thinking: bool = False
 ) -> List[Dict[str, Any]]:
     """
     将 OpenAI 消息格式转换为 Antigravity contents 格式
@@ -193,8 +201,28 @@ def openai_messages_to_antigravity_contents(
         messages: OpenAI 格式的消息列表
         enable_thinking: 是否启用 thinking（当启用时，最后一条 assistant 消息必须以 thinking block 开头）
         tools: 工具定义列表（用于提取参数摘要）
+        recommend_sequential_thinking: 是否推荐使用 Sequential Thinking 工具
     """
     from .tool_converter import extract_tool_params_summary
+
+    # Check for sequential thinking tool
+    has_sequential_tool = False
+    if recommend_sequential_thinking and tools:
+        for tool in tools:
+            name = ""
+            if isinstance(tool, dict):
+                if "function" in tool:
+                    name = tool["function"].get("name", "")
+                else:
+                    name = tool.get("name", "")
+            elif hasattr(tool, "function"):
+                name = getattr(tool.function, "name", "")
+            elif hasattr(tool, "name"):
+                name = getattr(tool, "name", "")
+
+            if name and "sequential" in name.lower() and "thinking" in name.lower():
+                has_sequential_tool = True
+                break
 
     contents = []
     system_messages = []
@@ -239,6 +267,11 @@ def openai_messages_to_antigravity_contents(
 
         # 处理 system 消息 - 合并到第一条用户消息
         if role == "system":
+            # Inject Sequential Thinking prompt if recommended and available
+            if has_sequential_tool:
+                content = content + SEQUENTIAL_THINKING_PROMPT
+                log.info("[ANTIGRAVITY] Injected Sequential Thinking prompt into system message")
+
             # 在 system 消息末尾注入工具格式提示（包含动态参数）
             if has_tools:
                 # 提取工具参数摘要（从传入的 tools 参数中提取）

@@ -228,7 +228,8 @@ def extract_images_from_content(content: Any) -> Dict[str, Any]:
 def openai_messages_to_antigravity_contents(
     messages: List[Any],
     enable_thinking: bool = False,
-    tools: Optional[List[Any]] = None
+    tools: Optional[List[Any]] = None,
+    recommend_sequential_thinking: bool = False
 ) -> List[Dict[str, Any]]:
     """
     将 OpenAI 消息格式转换为 Antigravity contents 格式
@@ -236,7 +237,29 @@ def openai_messages_to_antigravity_contents(
     增强功能：
     - 支持 thinking block 处理
     - 支持工具定义传递
+    - 支持 Sequential Thinking 工具推荐
     """
+    from .converters.message_converter import SEQUENTIAL_THINKING_PROMPT
+
+    # Check for sequential thinking tool
+    has_sequential_tool = False
+    if recommend_sequential_thinking and tools:
+        for tool in tools:
+            name = ""
+            if isinstance(tool, dict):
+                if "function" in tool:
+                    name = tool["function"].get("name", "")
+                else:
+                    name = tool.get("name", "")
+            elif hasattr(tool, "function"):
+                name = getattr(tool.function, "name", "")
+            elif hasattr(tool, "name"):
+                name = getattr(tool, "name", "")
+
+            if name and "sequential" in name.lower() and "thinking" in name.lower():
+                has_sequential_tool = True
+                break
+
     contents = []
     system_messages = []
 
@@ -248,6 +271,10 @@ def openai_messages_to_antigravity_contents(
 
         # 处理 system 消息 - 合并到第一条用户消息
         if role == "system":
+            # Inject Sequential Thinking prompt if recommended and available
+            if has_sequential_tool:
+                content = content + SEQUENTIAL_THINKING_PROMPT
+                log.info("[ANTIGRAVITY] Injected Sequential Thinking prompt into system message")
             system_messages.append(content)
             continue
 
@@ -664,7 +691,11 @@ async def convert_antigravity_stream_to_openai(
         "empty_parts_count": 0,
         "last_usage_metadata": None,
         "actual_prompt_tokens": 0,
-        "cached_content_tokens": 0
+        "cached_content_tokens": 0,
+        # [OBSERVABILITY] Thinking 退化状态检测
+        "thinking_parts_count": 0,  # thinking parts 数量
+        "total_thinking_chars": 0,  # thinking 内容总字符数
+        "short_thinking_parts": 0,  # 短 thinking parts 数量（<50字符，可能是退化状态）
     }
 
     created = int(time.time())
@@ -769,7 +800,17 @@ async def convert_antigravity_stream_to_openai(
                     if not state["thinking_started"]:
                         state["thinking_buffer"] = "<think>\n"
                         state["thinking_started"] = True
-                    state["thinking_buffer"] += part.get("text", "")
+
+                    thinking_text = part.get("text", "")
+                    state["thinking_buffer"] += thinking_text
+
+                    # [OBSERVABILITY] 统计 thinking parts 用于退化检测
+                    state["thinking_parts_count"] += 1
+                    state["total_thinking_chars"] += len(thinking_text)
+                    if len(thinking_text) < 50:
+                        state["short_thinking_parts"] += 1
+                        log.debug(f"[THINKING OBSERVABILITY] Short thinking part detected: "
+                                 f"length={len(thinking_text)}, content='{thinking_text[:100]}...'")
 
                 # 处理图片数据 (inlineData)
                 elif "inlineData" in part:
@@ -940,7 +981,33 @@ async def convert_antigravity_stream_to_openai(
             finish_reason = "tool_calls" if state["tool_calls"] else "stop"
             yield build_finish_chunk(finish_reason)
 
+        # [OBSERVABILITY] Thinking 退化状态检测和警告
+        if state["thinking_parts_count"] > 0:
+            avg_thinking_chars = state["total_thinking_chars"] / state["thinking_parts_count"]
+            short_ratio = state["short_thinking_parts"] / state["thinking_parts_count"]
+
+            # 退化状态判断条件：
+            # 1. 平均每个 thinking part 少于 100 字符（正常推理应该更长）
+            # 2. 超过 50% 的 thinking parts 是短句（<50字符）
+            is_degraded = avg_thinking_chars < 100 or short_ratio > 0.5
+
+            if is_degraded:
+                log.warning(f"[THINKING DEGRADATION] Possible thinking degradation detected! "
+                           f"thinking_parts={state['thinking_parts_count']}, "
+                           f"total_chars={state['total_thinking_chars']}, "
+                           f"avg_chars={avg_thinking_chars:.1f}, "
+                           f"short_parts={state['short_thinking_parts']} ({short_ratio*100:.1f}%). "
+                           f"Model may be producing pseudo-thinking instead of real reasoning. "
+                           f"Consider using Sequential Thinking MCP tool for complex tasks.")
+            else:
+                log.info(f"[THINKING OBSERVABILITY] Thinking stats: "
+                        f"parts={state['thinking_parts_count']}, "
+                        f"total_chars={state['total_thinking_chars']}, "
+                        f"avg_chars={avg_thinking_chars:.1f}, "
+                        f"short_parts={state['short_thinking_parts']} ({short_ratio*100:.1f}%)")
+
         # 发送结束标记
+        log.info(f"[ANTIGRAVITY STREAM] Stream ending. SSE lines: {state['sse_lines_received']}, Chunks sent: {state['chunks_sent']}, Content buffer: {len(state['content_buffer'])}, Tool calls: {len(state['tool_calls'])}, has_valid_content: {state.get('has_valid_content', False)}, empty_parts_count: {state.get('empty_parts_count', 0)}, finish_reason_sent: {state.get('finish_reason_sent', False)}")
         yield "data: [DONE]\n\n"
 
     except Exception as e:
@@ -1287,9 +1354,20 @@ async def chat_completions(
 
     log.info(f"[ANTIGRAVITY] Request: model={model} -> {actual_model}, stream={stream}, thinking={enable_thinking}, anti_truncation={use_anti_truncation}")
 
+    # 决定是否推荐 Sequential Thinking
+    # 条件：是 Thinking 模型，但 Thinking 被禁用（例如因为历史消息缺少 signature）
+    recommend_sequential = is_thinking_model(model) and not enable_thinking
+    if recommend_sequential:
+        log.info(f"[ANTIGRAVITY] Thinking disabled for {model}, recommending Sequential Thinking tool if available")
+
     # 转换消息格式（传递 thinking 和 tools 参数）
     try:
-        contents = openai_messages_to_antigravity_contents(messages, enable_thinking=enable_thinking, tools=tools)
+        contents = openai_messages_to_antigravity_contents(
+            messages,
+            enable_thinking=enable_thinking,
+            tools=tools,
+            recommend_sequential_thinking=recommend_sequential
+        )
     except Exception as e:
         log.error(f"Failed to convert messages: {e}")
         raise HTTPException(status_code=500, detail=f"Message conversion failed: {str(e)}")
@@ -1397,7 +1475,22 @@ async def chat_completions(
 
     except Exception as e:
         log.error(f"[ANTIGRAVITY] Request failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Antigravity API request failed: {str(e)}")
+        error_msg = str(e)
+
+        # 检查是否是额度用尽错误 - 返回 503 触发 Gateway fallback 到 Copilot
+        if is_quota_exhausted_error(error_msg):
+            log.warning(f"[ANTIGRAVITY FALLBACK] 检测到额度用尽错误，返回 503 触发 Gateway fallback 到 Copilot")
+            raise HTTPException(
+                status_code=503,
+                detail=f"All Antigravity quota pools exhausted. Gateway should route to Copilot. Original error: {error_msg}"
+            )
+
+        # 检查是否是凭证不可用错误 - 返回 503 让 Gateway 路由到 Copilot
+        if is_credential_unavailable_error(error_msg):
+            log.warning(f"[ANTIGRAVITY] 凭证不可用，返回 503 让 Gateway 路由到备用后端")
+            raise HTTPException(status_code=503, detail=f"Antigravity credentials unavailable: {error_msg}")
+
+        raise HTTPException(status_code=500, detail=f"Antigravity API request failed: {error_msg}")
 
 
 # ==================== Gemini 格式 API 端点 ====================
