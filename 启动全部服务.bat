@@ -10,10 +10,22 @@ echo.
 
 cd /d "%~dp0"
 
+echo [INFO] Checking and killing processes on required ports...
+
+REM Check and kill process on port 7861
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :7861 ^| findstr LISTENING') do (
+    echo [INFO] Killing process on port 7861 PID: %%a
+    taskkill /F /PID %%a >nul 2>&1
+)
+
+REM Check and kill process on port 4141
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :4141 ^| findstr LISTENING') do (
+    echo [INFO] Killing process on port 4141 PID: %%a
+    taskkill /F /PID %%a >nul 2>&1
+)
+
 echo [INFO] Stopping existing bun processes...
-REM 使用 start /b 在后台执行 taskkill，避免卡住
 start /b "" cmd /c "taskkill /F /IM bun.exe >nul 2>&1"
-REM 短暂等待确保命令已发出
 ping -n 2 127.0.0.1 >nul
 
 timeout /t 2 /nobreak >nul
@@ -26,13 +38,9 @@ echo.
 echo ========================================
 echo.
 
-REM 检查 copilot-api 目录（在父目录或同级目录）
 set COPILOT_DIR=
-if exist "%~dp0..\copilot-api" (
-    set COPILOT_DIR=%~dp0..\copilot-api
-) else if exist "%~dp0copilot-api" (
-    set COPILOT_DIR=%~dp0copilot-api
-)
+if exist "%~dp0..\copilot-api" set COPILOT_DIR=%~dp0..\copilot-api
+if exist "%~dp0copilot-api" set COPILOT_DIR=%~dp0copilot-api
 
 if not exist "%USERPROFILE%\.local\share\copilot-api\github_token" (
     echo [WARN] Copilot API not authenticated, skipping...
@@ -49,7 +57,6 @@ timeout /t 3 /nobreak >nul
 echo [INFO] Starting gcli2api-official on port 7861...
 echo.
 
-REM 检查虚拟环境是否存在
 if not exist ".venv\Scripts\activate.bat" (
     echo [WARN] Virtual environment not found, creating...
     uv venv
@@ -86,5 +93,3 @@ echo.
 python web.py
 
 pause
-
-
