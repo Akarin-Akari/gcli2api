@@ -162,6 +162,7 @@ async def main():
     log.info("统一网关 (自动故障转移):")
     log.info(f"   Gateway API: http://127.0.0.1:{port}/gateway/v1")
     log.info(f"   优先级: Antigravity > Copilot")
+    log.info("=" * 60)
 
     # 配置hypercorn
     config = Config()
@@ -169,6 +170,7 @@ async def main():
     config.accesslog = "-"
     config.errorlog = "-"
     config.loglevel = "INFO"
+    config.use_colors = True
 
     # 设置请求体大小限制为100MB
     config.max_request_body_size = 100 * 1024 * 1024
