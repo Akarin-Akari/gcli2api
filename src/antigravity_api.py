@@ -18,6 +18,13 @@ from config import (
     get_retry_429_max_retries,
 )
 from log import log
+from .fallback_manager import get_cross_pool_fallback, get_model_pool
+
+
+class NonRetryableError(Exception):
+    """不可重试的错误，用于 400 等客户端错误，避免外层 except 继续重试"""
+    pass
+
 
 from .credential_manager import CredentialManager
 from .httpx_client import create_streaming_client_with_kwargs, http_client
@@ -84,7 +91,21 @@ def build_antigravity_request_body(
 
     Returns:
         Antigravity 格式的请求体
+    Raises:
+        ValueError: 如果 contents 为空或包含空 parts
     """
+    # ✅ 新增：验证 contents 不为空（防御性检查，最后一道防线）
+    if not contents:
+        raise ValueError("contents cannot be empty. At least one message with valid content is required. "
+                        "This is a defensive check - the issue should be caught earlier in chat_completions.")
+
+    # 验证每个 content 的 parts 不为空
+    for i, content_item in enumerate(contents):
+        parts = content_item.get("parts", [])
+        if not parts:
+            raise ValueError(f"Content at index {i} (role={content_item.get('role')}) has empty parts. "
+                           f"Each content must have at least one part (text, image, or functionCall).")
+
     request_body = {
         "project": project_id,
         "requestId": generate_request_id(),
@@ -154,37 +175,79 @@ async def _filter_thinking_from_stream(lines, return_thoughts: bool):
 async def send_antigravity_request_stream(
     request_body: Dict[str, Any],
     credential_manager: CredentialManager,
+    enable_cross_pool_fallback: bool = False,
 ) -> Tuple[Any, str, Dict[str, Any]]:
     """
     发送 Antigravity 流式请求
+
+    重试策略优化：
+    - 5xx 错误：用同一个凭证重试（服务端临时问题，切换凭证没意义）
+    - 429 限流：切换凭证重试，但最大 3 次（避免快速消耗所有凭证额度）
+    - 400 错误：不重试（客户端参数错误）
+    - 额度用尽：不重试（让上层处理降级）
 
     Returns:
         (response, credential_name, credential_data)
     """
     retry_enabled = await get_retry_429_enabled()
-    max_retries = await get_retry_429_max_retries()
     retry_interval = await get_retry_429_interval()
 
     # 提取模型名称用于模型级 CD
     model_name = request_body.get("model", "")
 
-    for attempt in range(max_retries + 1):
-        # 获取可用凭证（传递模型名称）
-        cred_result = await credential_manager.get_valid_credential(
-            is_antigravity=True, model_key=model_name
-        )
-        if not cred_result:
-            log.error("[ANTIGRAVITY] No valid credentials available")
-            raise Exception("No valid antigravity credentials available")
+    # 429 限流时切换凭证的最大次数（避免快速消耗所有凭证额度）
+    max_credential_switches = 3
+    credential_switch_count = 0
 
-        current_file, credential_data = cred_result
+    # 5xx 错误时用同一凭证重试的最大次数
+    max_same_cred_retries = 2
+
+    # 当前使用的凭证（5xx 错误时复用）
+    current_cred_result = None
+
+    while True:
+        # 决定是否需要获取新凭证
+        need_new_credential = current_cred_result is None
+
+        if need_new_credential:
+            # 获取可用凭证（传递模型名称）
+            cred_result = await credential_manager.get_valid_credential(
+                is_antigravity=True, model_key=model_name
+            )
+
+            # 根据 enable_cross_pool_fallback 参数决定降级策略
+            if not cred_result:
+                if enable_cross_pool_fallback:
+                    # Claude Code 模式：尝试跨池降级
+                    fallback_model = get_cross_pool_fallback(model_name, log_level="info")
+                    if fallback_model:
+                        log.warning(f"[ANTIGRAVITY FALLBACK] 模型 {model_name} 凭证不可用，尝试降级到 {fallback_model}")
+                        cred_result = await credential_manager.get_valid_credential(
+                            is_antigravity=True, model_key=fallback_model
+                        )
+                        if cred_result:
+                            # 更新请求体中的模型名
+                            request_body["model"] = fallback_model
+                            model_name = fallback_model  # 更新本地变量
+                            log.info(f"[ANTIGRAVITY FALLBACK] 成功降级到 {fallback_model}")
+
+                # 如果仍然没有凭证，报错
+                if not cred_result:
+                    log.error(f"[ANTIGRAVITY] No valid credentials for model {model_name} - let Gateway handle fallback")
+                    raise Exception(f"No valid antigravity credentials available for model {model_name}")
+
+            current_cred_result = cred_result
+            same_cred_retry_count = 0  # 重置同凭证重试计数
+
+        current_file, credential_data = current_cred_result
         access_token = credential_data.get("access_token") or credential_data.get("token")
 
         if not access_token:
             log.error(f"[ANTIGRAVITY] No access token in credential: {current_file}")
+            current_cred_result = None  # 强制获取新凭证
             continue
 
-        log.info(f"[ANTIGRAVITY] Using credential: {current_file} (model={model_name}, attempt {attempt + 1}/{max_retries + 1})")
+        log.info(f"[ANTIGRAVITY] Using credential: {current_file} (model={model_name}, cred_switches={credential_switch_count}/{max_credential_switches})")
 
         # 构建请求头
         headers = build_antigravity_headers(access_token)
@@ -242,8 +305,7 @@ async def send_antigravity_request_stream(
                 )
 
                 # 检查自动封禁
-                should_auto_ban = await _check_should_auto_ban(response.status_code)
-                if should_auto_ban:
+                if await _check_should_auto_ban(response.status_code):
                     await _handle_auto_ban(credential_manager, response.status_code, current_file)
 
                 # 清理资源
@@ -253,22 +315,62 @@ async def send_antigravity_request_stream(
                     pass
                 await client.aclose()
 
-                # 重试逻辑: 仅对429错误或导致凭证封禁的错误进行重试
-                should_retry = False
-                if retry_enabled and attempt < max_retries:
-                    if should_auto_ban:
-                        log.warning(f"[ANTIGRAVITY RETRY] Retrying with next credential after auto-ban ({attempt + 1}/{max_retries})")
-                        should_retry = True
-                    elif response.status_code == 429:
-                        log.warning(f"[ANTIGRAVITY RETRY] 429 error, retrying ({attempt + 1}/{max_retries})")
-                        should_retry = True
+                # 400 错误 - 客户端参数错误，不重试
+                if response.status_code == 400:
+                    log.warning(f"[ANTIGRAVITY] 400 客户端错误，不重试 (model={model_name})")
+                    raise NonRetryableError(f"Antigravity API error ({response.status_code}): {error_text[:200]}")
 
-                if should_retry:
-                    await asyncio.sleep(retry_interval)
-                    continue
+                # 429 错误处理
+                if response.status_code == 429:
+                    # 检查是否是额度用尽
+                    is_capacity_exhausted = False
+                    try:
+                        error_data = json.loads(error_text)
+                        details = error_data.get("error", {}).get("details", [])
+                        for detail in details:
+                            if detail.get("reason") == "MODEL_CAPACITY_EXHAUSTED":
+                                is_capacity_exhausted = True
+                                log.warning(f"[ANTIGRAVITY] MODEL_CAPACITY_EXHAUSTED detected, not retrying (model={model_name})")
+                                break
+                    except Exception:
+                        pass
 
+                    if is_capacity_exhausted:
+                        # 额度用尽，不重试，让上层处理降级
+                        raise Exception(f"Antigravity API error ({response.status_code}): {error_text[:200]}")
+
+                    # 普通 429 限流 - 切换凭证重试，但有次数限制
+                    if retry_enabled and credential_switch_count < max_credential_switches:
+                        credential_switch_count += 1
+                        current_cred_result = None  # 强制获取新凭证
+                        log.warning(f"[ANTIGRAVITY] 429 限流，切换凭证重试 ({credential_switch_count}/{max_credential_switches})")
+                        await asyncio.sleep(retry_interval)
+                        continue
+                    else:
+                        log.warning(f"[ANTIGRAVITY] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，不再重试")
+                        raise Exception(f"Antigravity API error ({response.status_code}): {error_text[:200]}")
+
+                # 5xx 错误 - 用同一凭证重试
+                if response.status_code >= 500:
+                    same_cred_retry_count += 1
+                    if retry_enabled and same_cred_retry_count <= max_same_cred_retries:
+                        log.warning(f"[ANTIGRAVITY] 5xx 服务端错误，用同一凭证重试 ({same_cred_retry_count}/{max_same_cred_retries})")
+                        await asyncio.sleep(retry_interval)
+                        continue
+                    else:
+                        log.warning(f"[ANTIGRAVITY] 5xx 服务端错误，已达到最大重试次数 ({max_same_cred_retries})，不再重试")
+                        raise Exception(f"Antigravity API error ({response.status_code}): {error_text[:200]}")
+
+                # 其他错误，直接抛出
                 raise Exception(f"Antigravity API error ({response.status_code}): {error_text[:200]}")
 
+            except NonRetryableError:
+                # 不可重试的错误，确保清理资源后直接向上抛出
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+                raise
             except Exception as stream_error:
                 # 确保在异常情况下也清理资源
                 try:
@@ -277,50 +379,97 @@ async def send_antigravity_request_stream(
                     pass
                 raise stream_error
 
+        except NonRetryableError:
+            # 不可重试的错误，直接向上抛出
+            raise
         except Exception as e:
+            # 网络错误等 - 用同一凭证重试
             log.error(f"[ANTIGRAVITY] Request failed with credential {current_file}: {e}")
-            if attempt < max_retries:
+            same_cred_retry_count = getattr(locals(), 'same_cred_retry_count', 0) + 1
+            if retry_enabled and same_cred_retry_count <= max_same_cred_retries:
+                log.warning(f"[ANTIGRAVITY] 网络错误，用同一凭证重试 ({same_cred_retry_count}/{max_same_cred_retries})")
                 await asyncio.sleep(retry_interval)
                 continue
             raise
-
-    raise Exception("All antigravity retry attempts failed")
 
 
 async def send_antigravity_request_no_stream(
     request_body: Dict[str, Any],
     credential_manager: CredentialManager,
+    enable_cross_pool_fallback: bool = False,
 ) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
     """
     发送 Antigravity 非流式请求
+
+    重试策略优化（与流式请求保持一致）：
+    - 5xx 错误：用同一个凭证重试（服务端临时问题，切换凭证没意义）
+    - 429 限流：切换凭证重试，但最大 3 次（避免快速消耗所有凭证额度）
+    - 400 错误：不重试（客户端参数错误）
+    - 额度用尽：不重试（让上层处理降级）
 
     Returns:
         (response_data, credential_name, credential_data)
     """
     retry_enabled = await get_retry_429_enabled()
-    max_retries = await get_retry_429_max_retries()
     retry_interval = await get_retry_429_interval()
 
     # 提取模型名称用于模型级 CD
     model_name = request_body.get("model", "")
 
-    for attempt in range(max_retries + 1):
-        # 获取可用凭证（传递模型名称）
-        cred_result = await credential_manager.get_valid_credential(
-            is_antigravity=True, model_key=model_name
-        )
-        if not cred_result:
-            log.error("[ANTIGRAVITY] No valid credentials available")
-            raise Exception("No valid antigravity credentials available")
+    # 429 限流时切换凭证的最大次数（避免快速消耗所有凭证额度）
+    max_credential_switches = 3
+    credential_switch_count = 0
 
-        current_file, credential_data = cred_result
+    # 5xx 错误时用同一凭证重试的最大次数
+    max_same_cred_retries = 2
+
+    # 当前使用的凭证（5xx 错误时复用）
+    current_cred_result = None
+    same_cred_retry_count = 0
+
+    while True:
+        # 决定是否需要获取新凭证
+        need_new_credential = current_cred_result is None
+
+        if need_new_credential:
+            # 获取可用凭证（传递模型名称）
+            cred_result = await credential_manager.get_valid_credential(
+                is_antigravity=True, model_key=model_name
+            )
+
+            # 根据 enable_cross_pool_fallback 参数决定降级策略
+            if not cred_result:
+                if enable_cross_pool_fallback:
+                    # Claude Code 模式：尝试跨池降级
+                    fallback_model = get_cross_pool_fallback(model_name, log_level="info")
+                    if fallback_model:
+                        log.warning(f"[ANTIGRAVITY FALLBACK] 模型 {model_name} 凭证不可用，尝试降级到 {fallback_model}")
+                        cred_result = await credential_manager.get_valid_credential(
+                            is_antigravity=True, model_key=fallback_model
+                        )
+                        if cred_result:
+                            # 更新请求体中的模型名
+                            request_body["model"] = fallback_model
+                            model_name = fallback_model  # 更新本地变量
+                            log.info(f"[ANTIGRAVITY FALLBACK] 成功降级到 {fallback_model}")
+
+                # 如果仍然没有凭证，报错
+                if not cred_result:
+                    log.error(f"[ANTIGRAVITY] No valid credentials for model {model_name} - let Gateway handle fallback")
+                    raise Exception(f"No valid antigravity credentials available for model {model_name}")
+
+            current_cred_result = cred_result
+            same_cred_retry_count = 0  # 重置同凭证重试计数
+
+        current_file, credential_data = current_cred_result
         access_token = credential_data.get("access_token") or credential_data.get("token")
 
         if not access_token:
             log.error(f"[ANTIGRAVITY] No access token in credential: {current_file}")
+            current_cred_result = None  # 强制获取新凭证
             continue
 
-        log.info(f"[ANTIGRAVITY] Using credential: {current_file} (model={model_name}, attempt {attempt + 1}/{max_retries + 1})")
+        log.info(f"[ANTIGRAVITY] Using credential: {current_file} (model={model_name}, cred_switches={credential_switch_count}/{max_credential_switches})")
 
         # 构建请求头
         headers = build_antigravity_headers(access_token)
@@ -387,34 +536,70 @@ async def send_antigravity_request_no_stream(
                 )
 
                 # 检查自动封禁
-                should_auto_ban = await _check_should_auto_ban(response.status_code)
-                if should_auto_ban:
+                if await _check_should_auto_ban(response.status_code):
                     await _handle_auto_ban(credential_manager, response.status_code, current_file)
 
-                # 重试逻辑: 仅对429错误或导致凭证封禁的错误进行重试
-                should_retry = False
-                if retry_enabled and attempt < max_retries:
-                    if should_auto_ban:
-                        log.warning(f"[ANTIGRAVITY RETRY] Retrying with next credential after auto-ban ({attempt + 1}/{max_retries})")
-                        should_retry = True
-                    elif response.status_code == 429:
-                        log.warning(f"[ANTIGRAVITY RETRY] 429 error, retrying ({attempt + 1}/{max_retries})")
-                        should_retry = True
+                # 400 错误 - 客户端参数错误，不重试
+                if response.status_code == 400:
+                    log.warning(f"[ANTIGRAVITY] 400 客户端错误，不重试 (model={model_name})")
+                    raise NonRetryableError(f"Antigravity API error ({response.status_code}): {error_body[:200]}")
 
-                if should_retry:
-                    await asyncio.sleep(retry_interval)
-                    continue
+                # 429 错误处理
+                if response.status_code == 429:
+                    # 检查是否是额度用尽
+                    is_capacity_exhausted = False
+                    try:
+                        error_data = json.loads(error_body)
+                        details = error_data.get("error", {}).get("details", [])
+                        for detail in details:
+                            if detail.get("reason") == "MODEL_CAPACITY_EXHAUSTED":
+                                is_capacity_exhausted = True
+                                log.warning(f"[ANTIGRAVITY] MODEL_CAPACITY_EXHAUSTED detected, not retrying (model={model_name})")
+                                break
+                    except Exception:
+                        pass
 
+                    if is_capacity_exhausted:
+                        # 额度用尽，不重试，让上层处理降级
+                        raise Exception(f"Antigravity API error ({response.status_code}): {error_body[:200]}")
+
+                    # 普通 429 限流 - 切换凭证重试，但有次数限制
+                    if retry_enabled and credential_switch_count < max_credential_switches:
+                        credential_switch_count += 1
+                        current_cred_result = None  # 强制获取新凭证
+                        log.warning(f"[ANTIGRAVITY] 429 限流，切换凭证重试 ({credential_switch_count}/{max_credential_switches})")
+                        await asyncio.sleep(retry_interval)
+                        continue
+                    else:
+                        log.warning(f"[ANTIGRAVITY] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，不再重试")
+                        raise Exception(f"Antigravity API error ({response.status_code}): {error_body[:200]}")
+
+                # 5xx 错误 - 用同一凭证重试
+                if response.status_code >= 500:
+                    same_cred_retry_count += 1
+                    if retry_enabled and same_cred_retry_count <= max_same_cred_retries:
+                        log.warning(f"[ANTIGRAVITY] 5xx 服务端错误，用同一凭证重试 ({same_cred_retry_count}/{max_same_cred_retries})")
+                        await asyncio.sleep(retry_interval)
+                        continue
+                    else:
+                        log.warning(f"[ANTIGRAVITY] 5xx 服务端错误，已达到最大重试次数 ({max_same_cred_retries})，不再重试")
+                        raise Exception(f"Antigravity API error ({response.status_code}): {error_body[:200]}")
+
+                # 其他错误，直接抛出
                 raise Exception(f"Antigravity API error ({response.status_code}): {error_body[:200]}")
 
+        except NonRetryableError:
+            # 不可重试的错误，直接向上抛出
+            raise
         except Exception as e:
+            # 网络错误等 - 用同一凭证重试
             log.error(f"[ANTIGRAVITY] Request failed with credential {current_file}: {e}")
-            if attempt < max_retries:
+            same_cred_retry_count += 1
+            if retry_enabled and same_cred_retry_count <= max_same_cred_retries:
+                log.warning(f"[ANTIGRAVITY] 网络错误，用同一凭证重试 ({same_cred_retry_count}/{max_same_cred_retries})")
                 await asyncio.sleep(retry_interval)
                 continue
             raise
-
-    raise Exception("All antigravity retry attempts failed")
 
 
 async def fetch_available_models(
