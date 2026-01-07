@@ -92,7 +92,7 @@ GEMINI_TO_CLAUDE_FALLBACK = {
 HAIKU_FALLBACK_TARGET = "gemini-3-flash"
 
 # Copilot API 地址
-COPILOT_URL = "http://localhost:4141/"
+COPILOT_URL = "http://localhost:8141/"
 
 
 # ====================== 额度用尽检测关键词 ======================
@@ -480,7 +480,7 @@ async def decide_fallback_action(
     credential_name: Optional[str] = None,
     credential_manager = None,
     already_tried_fallback: bool = False,
-    copilot_url: str = "http://localhost:4141/",
+    copilot_url: str = "http://localhost:8141/",
 ) -> FallbackDecision:
     """
     根据错误类型和当前状态决定降级动作

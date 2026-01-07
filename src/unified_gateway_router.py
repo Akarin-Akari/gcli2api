@@ -4,7 +4,7 @@ Unified Gateway Router - 统一API网关路由
 
 优先级顺序：
 1. Antigravity API (gcli2api 本地) - 优先
-2. Copilot API (localhost:4141) - 备用
+2. Copilot API (localhost:8141) - 备用
 """
 
 import asyncio
@@ -993,7 +993,7 @@ BACKENDS = {
     },
     "copilot": {
         "name": "Copilot",
-        "base_url": "http://127.0.0.1:4141/v1",
+        "base_url": "http://127.0.0.1:8141/v1",
         "priority": 2,
         "timeout": 120.0,  # 思考模型需要更长时间
         "stream_timeout": 600.0,  # 流式请求超时（10分钟，GPT-5.2思考模型）
