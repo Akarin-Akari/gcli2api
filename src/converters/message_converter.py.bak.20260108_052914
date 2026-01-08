@@ -78,11 +78,9 @@ def strip_thinking_from_openai_messages(messages: List[Any]) -> List[Any]:
                     # 如果内容为空，保留一个占位符
                     if not content.strip():
                         content = "..."
-                    # 创建新消息对象，保留 tool_calls
-                    # [FIX 2026-01-08] 必须保留 tool_calls 字段，否则会导致孤儿 tool_result
+                    # 创建新消息对象
                     from src.models import OpenAIChatMessage
-                    tool_calls = getattr(msg, "tool_calls", None)
-                    cleaned_msg = OpenAIChatMessage(role=role, content=content, tool_calls=tool_calls)
+                    cleaned_msg = OpenAIChatMessage(role=role, content=content)
                     cleaned_messages.append(cleaned_msg)
                     continue
 
@@ -101,11 +99,9 @@ def strip_thinking_from_openai_messages(messages: List[Any]) -> List[Any]:
                     if not cleaned_content:
                         cleaned_content = [{"type": "text", "text": "..."}]
 
-                    # 创建新消息对象，保留 tool_calls
-                    # [FIX 2026-01-08] 必须保留 tool_calls 字段，否则会导致孤儿 tool_result
+                    # 创建新消息对象
                     from src.models import OpenAIChatMessage
-                    tool_calls = getattr(msg, "tool_calls", None)
-                    cleaned_msg = OpenAIChatMessage(role=role, content=cleaned_content, tool_calls=tool_calls)
+                    cleaned_msg = OpenAIChatMessage(role=role, content=cleaned_content)
                     cleaned_messages.append(cleaned_msg)
                     continue
 
@@ -234,21 +230,6 @@ def openai_messages_to_antigravity_contents(
 
     has_tool_error = False
     has_tools = False  # 检测是否有工具调用
-
-    # [FIX 2026-01-08] 建立 tool_call_id -> tool_name 的映射
-    # 用于验证 tool 消息是否有对应的 tool_use，避免 Anthropic API 返回 400 错误：
-    # "unexpected `tool_use_id` found in `tool_result` blocks"
-    tool_call_id_to_name: dict = {}
-    for msg in messages:
-        msg_tool_calls = getattr(msg, "tool_calls", None)
-        if msg_tool_calls:
-            for tc in msg_tool_calls:
-                tc_id = getattr(tc, "id", None)
-                tc_function = getattr(tc, "function", None)
-                if tc_id and tc_function:
-                    tc_name = getattr(tc_function, "name", "")
-                    if tc_name:
-                        tool_call_id_to_name[str(tc_id)] = tc_name
 
     for msg in messages:
         msg_content = getattr(msg, "content", "")
@@ -493,16 +474,6 @@ def openai_messages_to_antigravity_contents(
             if not tool_call_id:
                 log.warning(f"[ANTIGRAVITY] Tool message missing tool_call_id at index {i}, skipping")
                 continue  # 跳过无效的工具消息
-
-            # [FIX 2026-01-08] 验证对应的 tool_use 是否存在
-            # 如果 tool_use 不存在，跳过这个 tool_result，避免 Anthropic API 返回 400 错误：
-            # "unexpected `tool_use_id` found in `tool_result` blocks"
-            if str(tool_call_id) not in tool_call_id_to_name:
-                log.warning(f"[ANTIGRAVITY] Skipping orphan tool message: "
-                           f"tool_call_id={tool_call_id} not found in tool_call_id_to_name mapping. "
-                           f"This may happen when tool_use was filtered out (e.g., thinking disabled) "
-                           f"but tool_result was retained. Index: {i}")
-                continue
 
             # 处理 content 为 None 的情况
             if content is None:

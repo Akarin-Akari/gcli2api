@@ -35,6 +35,10 @@ def model_mapping(model_name: str) -> str:
         "claude-opus-4-5-high": "claude-opus-4-5",
         "claude-sonnet-4-5-high-thinking": "claude-sonnet-4-5-thinking",
         "claude-sonnet-4-5-high": "claude-sonnet-4-5",
+        # Gemini 模型名映射（修复 404 错误）
+        "gemini-3-pro-preview": "gemini-3-pro-high",
+        "gemini-3-pro": "gemini-3-pro-high",
+        "gemini-3-flash-preview": "gemini-3-flash",
         # OpenAI/Anthropic 标准模型名映射
         "claude-3-5-sonnet-20241022": "claude-sonnet-4-5",
         "claude-3-opus-20240229": "claude-opus-4-5",

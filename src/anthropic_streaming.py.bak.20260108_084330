@@ -248,14 +248,6 @@ async def antigravity_sse_to_anthropic_sse(
             if state.has_input_tokens and not message_start_sent:
                 send_message_start(ready_output, input_tokens=state.input_tokens)
 
-            # [FIX 2026-01-08] 提前发送 message_start 以避免流式输出被缓冲
-            # 问题：如果上游延迟发送 usageMetadata，所有事件都会被 enqueue 到 pending_output
-            # 导致流式输出看起来"卡住"，直到流结束才一次性发送
-            # 解决：在收到第一个有效内容时，如果 message_start 还没发送，就使用估算值发送
-            if parts and not message_start_sent:
-                # 有有效内容到来，立即发送 message_start（使用估算的 token 数）
-                send_message_start(ready_output, input_tokens=initial_input_tokens_int)
-
             for part in parts:
                 if not isinstance(part, dict):
                     continue

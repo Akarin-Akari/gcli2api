@@ -1,5 +1,6 @@
 @echo off
-chcp 65001 >nul
+setlocal enabledelayedexpansion
+chcp 65001 >nul 2>&1
 title Antigravity2API Services (Official Branch)
 
 echo ========================================
@@ -65,7 +66,41 @@ if not exist ".venv\Scripts\activate.bat" (
 )
 
 echo Activating virtual environment...
+if not exist ".venv\Scripts\activate.bat" (
+    echo [ERROR] Virtual environment activation script not found!
+    echo [ERROR] Please run: uv venv && uv sync
+    pause
+    exit /b 1
+)
 call .venv\Scripts\activate.bat
+if errorlevel 1 (
+    echo [ERROR] Failed to activate virtual environment!
+    pause
+    exit /b 1
+)
+
+echo [INFO] Verifying Python installation...
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Python not found or not in PATH!
+    pause
+    exit /b 1
+)
+
+echo [INFO] Checking web.py file...
+if not exist "web.py" (
+    echo [ERROR] web.py not found in current directory!
+    pause
+    exit /b 1
+)
+
+echo [INFO] Testing imports...
+python -c "import sys; sys.path.insert(0, '.'); from src.antigravity_api import *" >nul 2>&1
+if errorlevel 1 (
+    echo [WARN] Import test failed, but continuing anyway...
+    echo [WARN] This might indicate a code issue. Check the error above.
+    timeout /t 2 /nobreak >nul
+)
 
 echo Starting web server...
 echo.
@@ -91,5 +126,17 @@ echo        Local modifications are preserved.
 echo.
 
 python web.py
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Web server exited with error code %errorlevel%
+    echo [ERROR] Check the error messages above for details.
+    echo.
+    echo [TROUBLESHOOTING] If you see PermissionError [WinError 10013]:
+    echo   1. Check if port 7861 is in Windows reserved port range
+    echo   2. Run: netsh int ipv4 show excludedportrange protocol=tcp
+    echo   3. Try running this script as Administrator
+    echo   4. Or change the port in config.py
+    echo.
+)
 
 pause

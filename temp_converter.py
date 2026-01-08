@@ -224,9 +224,7 @@ def map_claude_model_to_gemini(claude_model: str) -> str:
     if claude_model == "claude-sonnet-4-5":
         return "claude-sonnet-4-5"
     if claude_model == "claude-haiku-4-5":
-        # 使用 fallback_manager 中定义的 Haiku 降级目标，保持一致性
-        from src.fallback_manager import HAIKU_FALLBACK_TARGET
-        return HAIKU_FALLBACK_TARGET  # gemini-3-flash
+        return "gemini-2.5-flash"
 
     supported_models = {
         # Gemini 系列
@@ -254,16 +252,13 @@ def map_claude_model_to_gemini(claude_model: str) -> str:
     if claude_model in supported_models:
         return claude_model
 
-    # Haiku 模型统一使用 HAIKU_FALLBACK_TARGET
-    from src.fallback_manager import HAIKU_FALLBACK_TARGET, is_haiku_model
-    if is_haiku_model(claude_model):
-        return HAIKU_FALLBACK_TARGET  # gemini-3-flash
-
     model_mapping = {
         "claude-sonnet-4.5": "claude-sonnet-4-5",
         "claude-3-5-sonnet-20241022": "claude-sonnet-4-5",
         "claude-3-5-sonnet-20240620": "claude-sonnet-4-5",
         "claude-opus-4": "gemini-3-pro-high",
+        "claude-haiku-4": "claude-haiku-4.5",
+        "claude-3-haiku-20240307": "gemini-2.5-flash",
     }
 
     return model_mapping.get(claude_model, "claude-sonnet-4-5")
@@ -560,21 +555,14 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
                     }
                     parts.append(fc_part)
                 elif item_type == "tool_result":
-                    tool_use_id = item.get("tool_use_id")
-
-                    # [FIX 2026-01-08] 验证对应的 tool_use 是否存在
-                    # 如果 tool_use 不存在，跳过这个 tool_result，避免 Anthropic API 返回 400 错误：
-                    # "unexpected `tool_use_id` found in `tool_result` blocks"
-                    if not tool_use_id or str(tool_use_id) not in tool_use_id_to_name:
-                        log.warning(f"[ANTHROPIC CONVERTER] Skipping orphan tool_result: "
-                                   f"tool_use_id={tool_use_id} not found in tool_use_id_to_name mapping. "
-                                   f"This may happen when tool_use was filtered out (e.g., thinking disabled) "
-                                   f"but tool_result was retained.")
-                        continue
-
                     output = _extract_tool_result_output(item.get("content"))
-                    # 从映射中获取 name（此时一定存在，因为上面已经验证过）
-                    tool_name = tool_use_id_to_name[str(tool_use_id)]
+                    tool_use_id = item.get("tool_use_id")
+                    # 从映射中获取 name，如果找不到则使用 tool_use_id 作为兜底
+                    # Gemini 要求 functionResponse.name 必须非空
+                    tool_name = tool_use_id_to_name.get(str(tool_use_id), "") if tool_use_id else ""
+                    if not tool_name:
+                        # 兜底：使用 tool_use_id 作为 name，避免空值导致 400 错误
+                        tool_name = str(tool_use_id) if tool_use_id else "unknown_tool"
                     parts.append(
                         {
                             "functionResponse": {
@@ -714,14 +702,6 @@ def build_generation_config(payload: Dict[str, Any]) -> tuple[Dict[str, Any], bo
 
     max_tokens = payload.get("max_tokens")
     if max_tokens is not None:
-        # 🐛 修复：添加上限保护，防止过大的 max_tokens 导致 Antigravity API 返回 429
-        # 参考 gemini_router.py 和 openai_router.py 的上限设置
-        MAX_OUTPUT_TOKENS_LIMIT = 65535
-        if isinstance(max_tokens, int) and max_tokens > MAX_OUTPUT_TOKENS_LIMIT:
-            log.warning(
-                f"[ANTHROPIC CONVERTER] maxOutputTokens 超过上限: {max_tokens} -> {MAX_OUTPUT_TOKENS_LIMIT}"
-            )
-            max_tokens = MAX_OUTPUT_TOKENS_LIMIT
         config["maxOutputTokens"] = max_tokens
 
     stop_sequences = payload.get("stop_sequences")

@@ -92,21 +92,33 @@ GEMINI_TO_CLAUDE_FALLBACK = {
 HAIKU_FALLBACK_TARGET = "gemini-3-flash"
 
 # Copilot API 地址
-COPILOT_URL = "http://localhost:8141/"
+COPILOT_URL = "http://localhost:4141/"
 
 
 # ====================== 额度用尽检测关键词 ======================
 
 QUOTA_EXHAUSTED_KEYWORDS = [
-    'model_capacity_exhausted',
-    'quota exhausted',
-    'quota exceeded',
-    'limit exceeded',
-    'capacity exhausted',
-    'no capacity available',  # Antigravity 容量不足错误
-    'rate limit exceeded',
-    'resource_exhausted',
-    'quota_exceeded',
+    'model_capacity_exhausted',   # ✅ API 明确返回的容量耗尽
+    'quota exhausted',            # ✅ 明确的配额用尽
+    'account quota',              # ✅ 账户配额相关
+    'billing quota',              # ✅ 计费配额相关
+    'no capacity available',      # ✅ 无可用容量
+    'all credentials exhausted',  # ✅ [FIX 2026-01-08] 凭证切换用尽
+    'quota_exhausted',            # ✅ [FIX 2026-01-08] 显式标记的配额用尽
+    # ❌ 移除这些过于宽泛的关键词：
+    # 'quota exceeded',           # 太宽泛
+    # 'limit exceeded',           # 太宽泛，可能是速率限制
+    # 'capacity exhausted',       # 太宽泛
+    # 'rate limit exceeded',      # 这是速率限制，不是配额用尽！
+    # 'resource_exhausted',       # 太宽泛，"Resource has been exhausted"只是临时限流！
+]
+
+# 这些关键词表示临时的速率限制，应该重试
+RATE_LIMIT_KEYWORDS = [
+    'rate limit',
+    'too many requests',
+    'resource has been exhausted',  # ← 这个是临时限制！
+    'retry after',
 ]
 
 
@@ -121,13 +133,33 @@ def get_status_code_from_error(error_msg: str) -> Optional[int]:
 
 
 def is_quota_exhausted_error(error_msg: str) -> bool:
-    """判断是否是额度用尽错误（429 + 额度关键词）"""
+    """
+    判断是否是真正的额度用尽错误（不是临时的速率限制）
+    
+    🐛 优化逻辑：
+    1. 先排除临时速率限制（这些应该重试）
+    2. 再检查真正的配额用尽关键词
+    
+    Returns:
+        True: 真正的配额用尽，不应该重试
+        False: 临时限制或其他错误，可以重试
+    """
     error_str = str(error_msg)
     error_lower = error_str.lower()
 
     status_code = get_status_code_from_error(error_str)
 
-    # 429 + 额度关键词
+    # 如果不是 429 错误，肯定不是配额问题
+    if status_code is not None and status_code != 429:
+        return False
+
+    # 🐛 优化：先检查是否是临时速率限制（这些不应该判为配额用尽）
+    for rate_keyword in RATE_LIMIT_KEYWORDS:
+        if rate_keyword in error_lower:
+            # "Resource has been exhausted" 是临时限制，不是真正的配额用尽
+            return False
+
+    # 429 + 配额用尽关键词 = 真正的配额用尽
     if status_code == 429:
         for keyword in QUOTA_EXHAUSTED_KEYWORDS:
             if keyword in error_lower:
@@ -480,7 +512,7 @@ async def decide_fallback_action(
     credential_name: Optional[str] = None,
     credential_manager = None,
     already_tried_fallback: bool = False,
-    copilot_url: str = "http://localhost:8141/",
+    copilot_url: str = "http://localhost:4141/",
 ) -> FallbackDecision:
     """
     根据错误类型和当前状态决定降级动作

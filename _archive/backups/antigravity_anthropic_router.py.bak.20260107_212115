@@ -21,19 +21,6 @@ from .antigravity_api import (
 from .anthropic_converter import convert_anthropic_request_to_antigravity_components
 from .anthropic_streaming import antigravity_sse_to_anthropic_sse
 from .token_estimator import estimate_input_tokens
-from .credential_manager import CredentialManager
-
-# ====================== 全局凭证管理器 ======================
-credential_manager = None
-
-
-async def get_credential_manager():
-    """获取全局凭证管理器实例"""
-    global credential_manager
-    if not credential_manager:
-        credential_manager = CredentialManager()
-        await credential_manager.initialize()
-    return credential_manager
 
 
 # ====================== 导入智能降级管理器 ======================
@@ -158,6 +145,12 @@ def _strip_thinking_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     new_payload = payload.copy()
     new_payload["messages"] = cleaned_messages
     return new_payload
+
+def _get_fallback_model(current_model: str) -> str | None:
+    """获取降级模型"""
+    fallback_list = MODEL_FALLBACK_CHAIN.get(current_model, [])
+    return fallback_list[0] if fallback_list else None
+
 
 async def _handle_request_with_thinking_retry(
     request_body: Dict[str, Any],
@@ -569,15 +562,10 @@ async def anthropic_messages(
         client_port = "unknown"
 
     user_agent = request.headers.get("user-agent", "")
-
-    # [ROLLBACK 2026-01-08] 移除 max_tokens 自动调整逻辑，直接透传客户端设置
-    # 原因：自动提升 max_tokens 会导致后端 429 错误
-
-    # [FIX 2026-01-08] 增强日志记录，添加 max_tokens 信息用于诊断
     log.info(
         f"[ANTHROPIC] /messages 收到请求: client={client_host}:{client_port}, model={model}, "
-        f"stream={stream}, messages={len(messages)}, max_tokens={max_tokens}, "
-        f"thinking_present={thinking_present}, thinking={thinking_summary}, ua={user_agent}"
+        f"stream={stream}, messages={len(messages)}, thinking_present={thinking_present}, "
+        f"thinking={thinking_summary}, ua={user_agent}"
     )
 
     if len(messages) == 1 and messages[0].get("role") == "user" and messages[0].get("content") == "Hi":
@@ -593,6 +581,8 @@ async def anthropic_messages(
                 "usage": {"input_tokens": 0, "output_tokens": 0},
             }
         )
+
+    from src.credential_manager import get_credential_manager
 
     cred_mgr = await get_credential_manager()
     cred_result = await cred_mgr.get_valid_credential(is_antigravity=True)
@@ -657,8 +647,8 @@ async def anthropic_messages(
                     log.warning(f"[ANTHROPIC] 模型降级: {current_model} -> {attempt_model}")
                     request_body["model"] = attempt_model
 
-                # [FIX 2026-01-08] 启用跨池降级，让 claude-opus-4-5-thinking 在 429 时能自动降级
-                resources, cred_name, _ = await send_antigravity_request_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
+                # ⚠️ 关键修复：禁用 API 层的跨池降级，避免双重循环浪费 token
+                resources, cred_name, _ = await send_antigravity_request_stream(request_body, cred_mgr, enable_cross_pool_fallback=False)
                 response, stream_ctx, client = resources
                 break  # 成功则跳出循环
             except Exception as e:
@@ -782,8 +772,8 @@ async def anthropic_messages(
                 log.warning(f"[ANTHROPIC] 模型降级: {current_model} -> {attempt_model}")
                 request_body["model"] = attempt_model
 
-            # [FIX 2026-01-08] 启用跨池降级，让 claude-opus-4-5-thinking 在 429 时能自动降级
-            response_data, _, _ = await send_antigravity_request_no_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
+            # ⚠️ 关键修复：禁用 API 层的跨池降级，避免双重循环浪费 token
+            response_data, _, _ = await send_antigravity_request_no_stream(request_body, cred_mgr, enable_cross_pool_fallback=False)
             break  # 成功则跳出循环
         except Exception as e:
             last_error = e

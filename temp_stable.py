@@ -21,19 +21,6 @@ from .antigravity_api import (
 from .anthropic_converter import convert_anthropic_request_to_antigravity_components
 from .anthropic_streaming import antigravity_sse_to_anthropic_sse
 from .token_estimator import estimate_input_tokens
-from .credential_manager import CredentialManager
-
-# ====================== 全局凭证管理器 ======================
-credential_manager = None
-
-
-async def get_credential_manager():
-    """获取全局凭证管理器实例"""
-    global credential_manager
-    if not credential_manager:
-        credential_manager = CredentialManager()
-        await credential_manager.initialize()
-    return credential_manager
 
 
 # ====================== 导入智能降级管理器 ======================
@@ -46,20 +33,19 @@ from .fallback_manager import (
     is_haiku_model,
     is_model_supported,
     HAIKU_FALLBACK_TARGET,
-    COPILOT_URL,
 )
 
 
 def _get_fallback_models(model_name: str) -> list:
     """
     获取模型的降级链（使用新的跨池降级逻辑）
-
+    
     注意：这个函数用于预计算降级目标，不会打印日志。
     实际降级时会在错误处理中打印日志。
-
+    
     Args:
         model_name: 当前模型名
-
+        
     Returns:
         降级模型列表
     """
@@ -81,15 +67,15 @@ def _get_fallback_models(model_name: str) -> list:
 def _should_fallback(error_msg: str) -> bool:
     """
     判断是否应该触发模型降级
-
+    
     新逻辑：
     - 只有额度用尽错误（429 + MODEL_CAPACITY_EXHAUSTED）才触发降级
     - 400/普通429/5xx 错误应该重试，不触发降级
     - 403 错误需要触发凭证验证
-
+    
     Args:
         error_msg: 错误消息
-
+        
     Returns:
         True 如果应该降级，False 如果应该重试或失败
     """
@@ -100,7 +86,6 @@ def _should_fallback(error_msg: str) -> bool:
 def _is_thinking_format_error(error_msg: str) -> bool:
     """
     检测是否是 thinking 格式相关的 400 错误。
-
     这类错误通常包含以下关键词：
     - "When thinking is disabled"
     - "thinking block"
@@ -158,52 +143,6 @@ def _strip_thinking_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     new_payload = payload.copy()
     new_payload["messages"] = cleaned_messages
     return new_payload
-
-async def _handle_request_with_thinking_retry(
-    request_body: Dict[str, Any],
-    cred_mgr,
-    is_stream: bool,
-    original_payload: Dict[str, Any],
-) -> tuple:
-    """
-    带 thinking 错误重试的请求处理包装器。
-
-    如果遇到 thinking 格式相关的 400 错误，会自动清理 thinking blocks 并重试一次。
-    """
-    try:
-        if is_stream:
-            return await send_antigravity_request_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
-        else:
-            return await send_antigravity_request_no_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
-    except Exception as e:
-        error_msg = str(e)
-
-        # 检查是否是 thinking 格式错误
-        if "(400)" in error_msg and _is_thinking_format_error(error_msg):
-            log.warning(
-                f"[ANTHROPIC] 检测到 thinking 格式错误，尝试清理 thinking blocks 后重试: {error_msg[:200]}"
-            )
-
-            # 清理 payload 中的 thinking blocks
-            cleaned_payload = _strip_thinking_from_payload(original_payload)
-
-            # 重新构建请求
-            from .anthropic_converter import convert_anthropic_request_to_antigravity_components
-            from .antigravity_api import build_antigravity_request_body
-
-            cleaned_components = convert_anthropic_request_to_antigravity_components(cleaned_payload)
-            cleaned_request_body = build_antigravity_request_body(**cleaned_components)
-
-            log.info("[ANTHROPIC] 已清理 thinking blocks，正在重试请求...")
-
-            # 重试请求
-            if is_stream:
-                return await send_antigravity_request_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=True)
-            else:
-                return await send_antigravity_request_no_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=True)
-
-        # 不是 thinking 错误，继续抛出
-        raise
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
@@ -569,15 +508,10 @@ async def anthropic_messages(
         client_port = "unknown"
 
     user_agent = request.headers.get("user-agent", "")
-
-    # [ROLLBACK 2026-01-08] 移除 max_tokens 自动调整逻辑，直接透传客户端设置
-    # 原因：自动提升 max_tokens 会导致后端 429 错误
-
-    # [FIX 2026-01-08] 增强日志记录，添加 max_tokens 信息用于诊断
     log.info(
         f"[ANTHROPIC] /messages 收到请求: client={client_host}:{client_port}, model={model}, "
-        f"stream={stream}, messages={len(messages)}, max_tokens={max_tokens}, "
-        f"thinking_present={thinking_present}, thinking={thinking_summary}, ua={user_agent}"
+        f"stream={stream}, messages={len(messages)}, thinking_present={thinking_present}, "
+        f"thinking={thinking_summary}, ua={user_agent}"
     )
 
     if len(messages) == 1 and messages[0].get("role") == "user" and messages[0].get("content") == "Hi":
@@ -593,6 +527,8 @@ async def anthropic_messages(
                 "usage": {"input_tokens": 0, "output_tokens": 0},
             }
         )
+
+    from src.credential_manager import get_credential_manager
 
     cred_mgr = await get_credential_manager()
     cred_result = await cred_mgr.get_valid_credential(is_antigravity=True)
@@ -639,231 +575,150 @@ async def anthropic_messages(
     )
     _debug_log_downstream_request_body(request_body)
 
+    # 获取降级模型链
+    fallback_models = _get_fallback_models(str(model))
+    original_model = str(model)
+    
     if stream:
         message_id = f"msg_{uuid.uuid4().hex}"
-
-        # 流式请求 - Router 层控制降级，API 层不做跨池降级（避免双重循环浪费 token）
+        
+        # 流式请求的降级逻辑
         current_model = components["model"]
+        current_payload = payload.copy()
         last_error = None
-        cred_name = None
-
-        # 使用新的跨池降级逻辑
-        fallback_models = _get_fallback_models(current_model)
-        models_to_try = [current_model] + fallback_models
-
-        for attempt_idx, attempt_model in enumerate(models_to_try):
+        
+        for fallback_idx, fallback_model in enumerate(fallback_models):
             try:
-                if attempt_model != current_model:
-                    log.warning(f"[ANTHROPIC] 模型降级: {current_model} -> {attempt_model}")
-                    request_body["model"] = attempt_model
-
-                # [FIX 2026-01-08] 启用跨池降级，让 claude-opus-4-5-thinking 在 429 时能自动降级
-                resources, cred_name, _ = await send_antigravity_request_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
+                # 如果是降级模型，更新请求体
+                if fallback_idx > 0:
+                    log.info(f"[ANTHROPIC] 流式请求降级: {current_model} -> {fallback_model}")
+                    current_payload["model"] = fallback_model
+                    current_model = fallback_model
+                    
+                    # 重新转换请求
+                    try:
+                        components = convert_anthropic_request_to_antigravity_components(current_payload)
+                    except Exception as e:
+                        log.error(f"[ANTHROPIC] 降级请求转换失败: {e}")
+                        continue
+                    
+                    request_body = build_antigravity_request_body(
+                        contents=components["contents"],
+                        model=components["model"],
+                        project_id=project_id,
+                        session_id=session_id,
+                        system_instruction=components["system_instruction"],
+                        tools=components["tools"],
+                        generation_config=components["generation_config"],
+                    )
+                
+                # 使用 thinking retry wrapper
+                resources, cred_name, _ = await _handle_request_with_thinking_retry(
+                    request_body, current_payload, cred_mgr, stream=True
+                )
                 response, stream_ctx, client = resources
-                break  # 成功则跳出循环
+                
+                async def stream_generator():
+                    try:
+                        # response 现在是 filtered_lines 生成器，直接使用
+                        async for chunk in antigravity_sse_to_anthropic_sse(
+                            response,
+                            model=original_model,  # 返回原始请求的模型名
+                            message_id=message_id,
+                            initial_input_tokens=estimated_tokens,
+                            credential_manager=cred_mgr,
+                            credential_name=cred_name,
+                        ):
+                            yield chunk
+                    finally:
+                        try:
+                            await stream_ctx.__aexit__(None, None, None)
+                        except Exception as e:
+                            log.debug(f"[ANTHROPIC] 关闭 stream_ctx 失败: {e}")
+                        try:
+                            await client.aclose()
+                        except Exception as e:
+                            log.debug(f"[ANTHROPIC] 关闭 client 失败: {e}")
+
+                return StreamingResponse(stream_generator(), media_type="text/event-stream")
+                
             except Exception as e:
                 last_error = e
-                error_msg = str(e)
-                log.error(f"[ANTHROPIC] 下游流式请求失败 (model={attempt_model}): {error_msg}")
+                error_str = str(e)
+                
+                if _should_fallback(e, fallback_idx, fallback_models):
+                    log.warning(f"[ANTHROPIC] 流式请求失败，尝试降级: {error_str[:200]}")
+                    continue
+                else:
+                    log.error(f"[ANTHROPIC] 流式请求失败，无法降级: {error_str[:200]}")
+                    break
+        
+        # 所有降级尝试都失败
+        log.error(f"[ANTHROPIC] 所有流式请求尝试均失败: {last_error}")
+        # 返回 503 以触发 Gateway fallback 到 Copilot
+        log.warning(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试，返回 503 触发 Gateway fallback 到 Copilot")
+        return _anthropic_error(status_code=503, message="All Antigravity quota pools exhausted. Gateway should route to Copilot.", error_type="api_error")
 
-                # 1. 403 错误 - 需要验证凭证，直接返回
-                if is_403_error(error_msg):
-                    log.warning(f"[ANTHROPIC FALLBACK] 检测到 403 错误，需要验证凭证")
-                    return _anthropic_error(status_code=403, message="Credential verification required", error_type="authentication_error")
-
-                # 2. 400 错误 - 客户端参数错误，不重试不降级
-                if "(400)" in error_msg:
-                    # 2.1 Thinking 格式错误 - 清理 thinking blocks 后重试一次
-                    if _is_thinking_format_error(error_msg):
-                        log.warning(f"[ANTHROPIC] 检测到 thinking 格式错误，尝试清理 thinking blocks 后重试")
-                        try:
-                            cleaned_payload = _strip_thinking_from_payload(payload)
-                            cleaned_components = convert_anthropic_request_to_antigravity_components(cleaned_payload)
-                            cleaned_request_body = build_antigravity_request_body(
-                                contents=cleaned_components["contents"],
-                                model=cleaned_components["model"],
-                                project_id=project_id,
-                                session_id=session_id,
-                                system_instruction=cleaned_components["system_instruction"],
-                                tools=cleaned_components["tools"],
-                                generation_config=cleaned_components["generation_config"],
-                            )
-                            log.info("[ANTHROPIC] 已清理 thinking blocks，正在重试流式请求...")
-                            resources, cred_name, _ = await send_antigravity_request_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=False)
-                            response, stream_ctx, client = resources
-                            break  # 成功则跳出循环
-                        except Exception as retry_e:
-                            log.error(f"[ANTHROPIC] 清理 thinking 后重试仍然失败: {retry_e}")
-                            return _anthropic_error(status_code=400, message=f"Thinking format error: {error_msg[:200]}", error_type="invalid_request_error")
-                    # 2.2 其他 400 错误 - 直接返回，不重试不降级（避免浪费 token）
-                    else:
-                        log.warning(f"[ANTHROPIC] 400 客户端错误，不重试不降级")
-                        return _anthropic_error(status_code=400, message=f"Client error: {error_msg[:200]}", error_type="invalid_request_error")
-
-                # 3. 额度用尽错误 - 触发跨池降级
-                if is_quota_exhausted_error(error_msg):
-                    log.warning(f"[ANTHROPIC FALLBACK] 检测到额度用尽错误")
-                    if attempt_idx < len(models_to_try) - 1:
-                        log.warning(f"[ANTHROPIC FALLBACK] 将尝试下一个降级模型")
-                        continue
-                    else:
-                        # 返回 503 以触发 Gateway fallback 到 Copilot
-                        log.warning(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试，返回 503 触发 Gateway fallback 到 Copilot")
-                        return _anthropic_error(status_code=503, message="All Antigravity quota pools exhausted. Gateway should route to Copilot.", error_type="api_error")
-
-                # 4. 凭证不可用错误 - 触发跨池降级（与额度用尽相同处理）
-                if is_credential_unavailable_error(error_msg):
-                    log.warning(f"[ANTHROPIC FALLBACK] 检测到凭证不可用错误")
-                    if attempt_idx < len(models_to_try) - 1:
-                        log.warning(f"[ANTHROPIC FALLBACK] 将尝试下一个降级模型")
-                        continue
-                    else:
-                        log.error(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试")
-                        return _anthropic_error(status_code=503, message="All credentials unavailable", error_type="api_error")
-
-                # 5. 5xx 错误 - 服务端临时问题，直接返回（API 层已经重试过了）
-                if is_retryable_error(error_msg):
-                    log.info(f"[ANTHROPIC] 服务端错误，API 层已重试，直接返回")
-                    return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
-
-                # 6. 其他错误 - 直接返回
-                return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
-        else:
-            # 所有模型都失败
-            log.error(f"[ANTHROPIC] 所有降级模型均失败: {last_error}")
-            return _anthropic_error(status_code=500, message="下游请求失败（已尝试所有降级模型）", error_type="api_error")
-
-        async def stream_generator():
-            try:
-                # response 现在是 filtered_lines 生成器，直接使用
-                async for chunk in antigravity_sse_to_anthropic_sse(
-                    response,
-                    model=str(model),
-                    message_id=message_id,
-                    initial_input_tokens=estimated_tokens,
-                    credential_manager=cred_mgr,
-                    credential_name=cred_name,
-                ):
-                    yield chunk
-            finally:
-                try:
-                    await stream_ctx.__aexit__(None, None, None)
-                except Exception as e:
-                    log.debug(f"[ANTHROPIC] 关闭 stream_ctx 失败: {e}")
-                try:
-                    await client.aclose()
-                except Exception as e:
-                    log.debug(f"[ANTHROPIC] 关闭 client 失败: {e}")
-
-        return StreamingResponse(
-            stream_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
+    # 非流式请求的降级逻辑
     request_id = f"msg_{int(time.time() * 1000)}"
-
-    # 带降级的非流式请求
     current_model = components["model"]
+    current_payload = payload.copy()
     last_error = None
-    response_data = None
-
-    # 使用新的跨池降级逻辑
-    fallback_models = _get_fallback_models(current_model)
-    models_to_try = [current_model] + fallback_models
-
-    for attempt_idx, attempt_model in enumerate(models_to_try):
+    
+    for fallback_idx, fallback_model in enumerate(fallback_models):
         try:
-            if attempt_model != current_model:
-                log.warning(f"[ANTHROPIC] 模型降级: {current_model} -> {attempt_model}")
-                request_body["model"] = attempt_model
-
-            # [FIX 2026-01-08] 启用跨池降级，让 claude-opus-4-5-thinking 在 429 时能自动降级
-            response_data, _, _ = await send_antigravity_request_no_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
-            break  # 成功则跳出循环
+            # 如果是降级模型，更新请求体
+            if fallback_idx > 0:
+                log.info(f"[ANTHROPIC] 非流式请求降级: {current_model} -> {fallback_model}")
+                current_payload["model"] = fallback_model
+                current_model = fallback_model
+                
+                # 重新转换请求
+                try:
+                    components = convert_anthropic_request_to_antigravity_components(current_payload)
+                except Exception as e:
+                    log.error(f"[ANTHROPIC] 降级请求转换失败: {e}")
+                    continue
+                
+                request_body = build_antigravity_request_body(
+                    contents=components["contents"],
+                    model=components["model"],
+                    project_id=project_id,
+                    session_id=session_id,
+                    system_instruction=components["system_instruction"],
+                    tools=components["tools"],
+                    generation_config=components["generation_config"],
+                )
+            
+            # 使用 thinking retry wrapper
+            response_data, _, _ = await _handle_request_with_thinking_retry(
+                request_body, current_payload, cred_mgr, stream=False
+            )
+            
+            anthropic_response = _convert_antigravity_response_to_anthropic_message(
+                response_data,
+                model=original_model,  # 返回原始请求的模型名
+                message_id=request_id,
+                fallback_input_tokens=estimated_tokens,
+            )
+            return JSONResponse(content=anthropic_response)
+            
         except Exception as e:
             last_error = e
-            error_msg = str(e)
-            log.error(f"[ANTHROPIC] 下游非流式请求失败 (model={attempt_model}): {error_msg}")
-
-            # 1. 403 错误 - 需要验证凭证，直接返回
-            if is_403_error(error_msg):
-                log.warning(f"[ANTHROPIC FALLBACK] 检测到 403 错误，需要验证凭证")
-                return _anthropic_error(status_code=403, message="Credential verification required", error_type="authentication_error")
-
-            # 2. 400 错误 - 客户端参数错误，不重试不降级
-            if "(400)" in error_msg:
-                # 2.1 Thinking 格式错误 - 清理 thinking blocks 后重试一次
-                if _is_thinking_format_error(error_msg):
-                    log.warning(f"[ANTHROPIC] 检测到 thinking 格式错误，尝试清理 thinking blocks 后重试")
-                    try:
-                        cleaned_payload = _strip_thinking_from_payload(payload)
-                        cleaned_components = convert_anthropic_request_to_antigravity_components(cleaned_payload)
-                        cleaned_request_body = build_antigravity_request_body(
-                            contents=cleaned_components["contents"],
-                            model=cleaned_components["model"],
-                            project_id=project_id,
-                            session_id=session_id,
-                            system_instruction=cleaned_components["system_instruction"],
-                            tools=cleaned_components["tools"],
-                            generation_config=cleaned_components["generation_config"],
-                        )
-                        log.info("[ANTHROPIC] 已清理 thinking blocks，正在重试非流式请求...")
-                        # ⚠️ 关键修复：禁用 API 层的跨池降级
-                        response_data, _, _ = await send_antigravity_request_no_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=False)
-                        break  # 成功则跳出循环
-                    except Exception as retry_e:
-                        log.error(f"[ANTHROPIC] 清理 thinking 后重试仍然失败: {retry_e}")
-                        return _anthropic_error(status_code=400, message=f"Thinking format error: {error_msg[:200]}", error_type="invalid_request_error")
-                # 2.2 其他 400 错误 - 直接返回，不重试不降级（避免浪费 token）
-                else:
-                    log.warning(f"[ANTHROPIC] 400 客户端错误，不重试不降级")
-                    return _anthropic_error(status_code=400, message=f"Client error: {error_msg[:200]}", error_type="invalid_request_error")
-
-            # 3. 5xx 错误 - 服务端临时问题，直接返回（API 层已经重试过了）
-            if is_retryable_error(error_msg):
-                log.info(f"[ANTHROPIC] 服务端错误，API 层已重试，直接返回")
-                return _anthropic_error(status_code=500, message="下游请求失败 (retryable)", error_type="api_error")
-
-            # 4. 额度用尽错误 - 触发跨池降级
-            if is_quota_exhausted_error(error_msg):
-                log.warning(f"[ANTHROPIC FALLBACK] 检测到额度用尽错误")
-                if attempt_idx < len(models_to_try) - 1:
-                    log.warning(f"[ANTHROPIC FALLBACK] 将尝试下一个降级模型")
-                    continue
-                else:
-                    # 返回 503 以触发 Gateway fallback 到 Copilot
-                    log.warning(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试，返回 503 触发 Gateway fallback 到 Copilot")
-                    return _anthropic_error(status_code=503, message="All Antigravity quota pools exhausted. Gateway should route to Copilot.", error_type="api_error")
-
-            # 5. 凭证不可用错误 - 触发跨池降级（与额度用尽相同处理）
-            if is_credential_unavailable_error(error_msg):
-                log.warning(f"[ANTHROPIC FALLBACK] 检测到凭证不可用错误")
-                if attempt_idx < len(models_to_try) - 1:
-                    log.warning(f"[ANTHROPIC FALLBACK] 将尝试下一个降级模型")
-                    continue
-                else:
-                    log.error(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试")
-                    return _anthropic_error(status_code=503, message="All credentials unavailable", error_type="api_error")
-
-            # 6. 其他错误 - 直接返回
-            return _anthropic_error(status_code=500, message="下游请求失败", error_type="api_error")
-    else:
-        # 所有模型都失败
-        log.error(f"[ANTHROPIC] 所有降级模型均失败: {last_error}")
-        return _anthropic_error(status_code=500, message="下游请求失败（已尝试所有降级模型）", error_type="api_error")
-
-    anthropic_response = _convert_antigravity_response_to_anthropic_message(
-        response_data,
-        model=str(model),
-        message_id=request_id,
-        fallback_input_tokens=estimated_tokens,
-    )
-    return JSONResponse(content=anthropic_response)
+            error_str = str(e)
+            
+            if _should_fallback(e, fallback_idx, fallback_models):
+                log.warning(f"[ANTHROPIC] 非流式请求失败，尝试降级: {error_str[:200]}")
+                continue
+            else:
+                log.error(f"[ANTHROPIC] 非流式请求失败，无法降级: {error_str[:200]}")
+                break
+    
+    # 所有降级尝试都失败
+    log.error(f"[ANTHROPIC] 所有非流式请求尝试均失败: {last_error}")
+    # 返回 503 以触发 Gateway fallback 到 Copilot
+    log.warning(f"[ANTHROPIC FALLBACK] 所有降级模型均已尝试，返回 503 触发 Gateway fallback 到 Copilot")
+    return _anthropic_error(status_code=503, message="All Antigravity quota pools exhausted. Gateway should route to Copilot.", error_type="api_error")
 
 
 @router.post("/antigravity/v1/messages/count_tokens")

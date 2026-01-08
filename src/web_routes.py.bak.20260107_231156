@@ -28,7 +28,6 @@ from starlette.websockets import WebSocketState
 
 import config
 from log import log
-from .signature_cache import get_cache_stats, get_signature_cache
 
 from .auth import (
     asyncio_complete_auth_flow,
@@ -1888,82 +1887,5 @@ async def get_antigravity_credential_quota(filename: str, token: str = Depends(v
         log.error(f"获取Antigravity凭证额度失败 {filename}: {e}")
         raise HTTPException(status_code=500, detail=f"获取额度失败: {str(e)}")
 
-# ==================== Signature Cache 统计 API ====================
 
-@router.get("/cache/signature/stats")
-async def signature_cache_stats(token: str = Depends(verify_panel_token)):
-    """
-    获取 Signature 缓存统计信息
-
-    返回:
-    - hits: 缓存命中次数
-    - misses: 缓存未命中次数
-    - writes: 缓存写入次数
-    - evictions: LRU 淘汰次数
-    - expirations: TTL 过期次数
-    - hit_rate: 缓存命中率
-    - cache_size: 当前缓存大小
-    - max_size: 最大缓存容量
-    - ttl_seconds: TTL 过期时间（秒）
-    """
-    try:
-        stats = get_cache_stats()
-        return JSONResponse(content={
-            "success": True,
-            "data": stats
-        })
-    except Exception as e:
-        log.error(f"获取 Signature 缓存统计失败: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-
-@router.post("/cache/signature/clear")
-async def signature_cache_clear(token: str = Depends(verify_panel_token)):
-    """
-    清空 Signature 缓存
-
-    返回:
-    - cleared_count: 清除的缓存条目数量
-    """
-    try:
-        cache = get_signature_cache()
-        cleared_count = cache.clear()
-        log.info(f"[SIGNATURE_CACHE] 手动清空缓存: 删除 {cleared_count} 条")
-        return JSONResponse(content={
-            "success": True,
-            "data": {"cleared_count": cleared_count}
-        })
-    except Exception as e:
-        log.error(f"清空 Signature 缓存失败: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
-
-
-@router.post("/cache/signature/cleanup")
-async def signature_cache_cleanup(token: str = Depends(verify_panel_token)):
-    """
-    清理过期的 Signature 缓存条目
-
-    返回:
-    - cleaned_count: 清理的过期条目数量
-    """
-    try:
-        cache = get_signature_cache()
-        cleaned_count = cache.cleanup_expired()
-        log.info(f"[SIGNATURE_CACHE] 手动清理过期缓存: 删除 {cleaned_count} 条")
-        return JSONResponse(content={
-            "success": True,
-            "data": {"cleaned_count": cleaned_count}
-        })
-    except Exception as e:
-        log.error(f"清理过期 Signature 缓存失败: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)}
-        )
 

@@ -204,8 +204,13 @@ async def send_antigravity_request_stream(
 
     # 当前使用的凭证（5xx 错误时复用）
     current_cred_result = None
+    
+    # [FIX 2026-01-08] 添加 attempt 计数器，使日志更清晰
+    attempt_count = 0
 
     while True:
+        attempt_count += 1
+        
         # 决定是否需要获取新凭证
         need_new_credential = current_cred_result is None
 
@@ -247,7 +252,8 @@ async def send_antigravity_request_stream(
             current_cred_result = None  # 强制获取新凭证
             continue
 
-        log.info(f"[ANTIGRAVITY] Using credential: {current_file} (model={model_name}, cred_switches={credential_switch_count}/{max_credential_switches})")
+        # [FIX 2026-01-08] 改进日志：显示 attempt 次数和已切换凭证次数
+        log.info(f"[ANTIGRAVITY] Using credential: {current_file} (model={model_name}, attempt={attempt_count}, cred_switched={credential_switch_count}/{max_credential_switches})")
 
         # 构建请求头
         headers = build_antigravity_headers(access_token)
@@ -347,8 +353,9 @@ async def send_antigravity_request_stream(
                         await asyncio.sleep(retry_interval)
                         continue
                     else:
-                        log.warning(f"[ANTIGRAVITY] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，不再重试")
-                        raise Exception(f"Antigravity API error ({response.status_code}): {error_text[:200]}")
+                        # [FIX 2026-01-08] 凭证切换用尽，标记为 QUOTA_EXHAUSTED 让上层触发跨池降级
+                        log.warning(f"[ANTIGRAVITY] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，标记为 QUOTA_EXHAUSTED 触发降级")
+                        raise Exception(f"Antigravity API error ({response.status_code}) [QUOTA_EXHAUSTED]: All credentials exhausted. {error_text[:200]}")
 
                 # 5xx 错误 - 用同一凭证重试
                 if response.status_code >= 500:
@@ -426,8 +433,13 @@ async def send_antigravity_request_no_stream(
     # 当前使用的凭证（5xx 错误时复用）
     current_cred_result = None
     same_cred_retry_count = 0
+    
+    # [FIX 2026-01-08] 添加 attempt 计数器，使日志更清晰
+    attempt_count = 0
 
     while True:
+        attempt_count += 1
+        
         # 决定是否需要获取新凭证
         need_new_credential = current_cred_result is None
 
@@ -469,7 +481,8 @@ async def send_antigravity_request_no_stream(
             current_cred_result = None  # 强制获取新凭证
             continue
 
-        log.info(f"[ANTIGRAVITY] Using credential: {current_file} (model={model_name}, cred_switches={credential_switch_count}/{max_credential_switches})")
+        # [FIX 2026-01-08] 改进日志：显示 attempt 次数和已切换凭证次数
+        log.info(f"[ANTIGRAVITY] Using credential: {current_file} (model={model_name}, attempt={attempt_count}, cred_switched={credential_switch_count}/{max_credential_switches})")
 
         # 构建请求头
         headers = build_antigravity_headers(access_token)
@@ -571,8 +584,9 @@ async def send_antigravity_request_no_stream(
                         await asyncio.sleep(retry_interval)
                         continue
                     else:
-                        log.warning(f"[ANTIGRAVITY] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，不再重试")
-                        raise Exception(f"Antigravity API error ({response.status_code}): {error_body[:200]}")
+                        # [FIX 2026-01-08] 凭证切换用尽，标记为 QUOTA_EXHAUSTED 让上层触发跨池降级
+                        log.warning(f"[ANTIGRAVITY] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，标记为 QUOTA_EXHAUSTED 触发降级")
+                        raise Exception(f"Antigravity API error ({response.status_code}) [QUOTA_EXHAUSTED]: All credentials exhausted. {error_body[:200]}")
 
                 # 5xx 错误 - 用同一凭证重试
                 if response.status_code >= 500:

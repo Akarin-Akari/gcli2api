@@ -540,25 +540,6 @@ async def convert_antigravity_stream_to_openai(
                     state["has_valid_content"] = True  # 收到了有效的工具调用
                     log.debug(f"[ANTIGRAVITY STREAM] Converted tool_call: {json.dumps(tool_call)[:200]}")
 
-                    # [FIX 2026-01-08] 立即发送工具调用，不等待 finish_reason
-                    # 问题：工具调用被缓冲到 state["tool_calls"]，只有在 finish_reason 时才发送
-                    # 导致 Cursor 看不到工具调用，以为卡住了
-                    # 解决：收到工具调用时立即发送
-                    tool_chunk = {
-                        "id": request_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model,
-                        "choices": [{
-                            "index": 0,
-                            "delta": {"tool_calls": [tool_call]},
-                            "finish_reason": None
-                        }]
-                    }
-                    log.info(f"[ANTIGRAVITY STREAM] Immediately sending tool call: {fc.get('name')}")
-                    yield f"data: {json.dumps(tool_chunk)}\n\n"
-                    state["chunks_sent"] += 1
-
             # 检查是否结束
             finish_reason = data.get("response", {}).get("candidates", [{}])[0].get("finishReason")
 
@@ -596,10 +577,22 @@ async def convert_antigravity_stream_to_openai(
                 if thinking_block:
                     yield build_content_chunk(thinking_block)
 
-                # [FIX 2026-01-08] 工具调用已在收到时立即发送，这里不再重复发送
-                # 只需要标记工具调用已发送（用于后续 finish_reason 判断）
+                # 发送工具调用
                 if state["tool_calls"]:
-                    log.info(f"[ANTIGRAVITY STREAM] Tool calls already sent immediately, count: {len(state['tool_calls'])}")
+                    log.info(f"[ANTIGRAVITY STREAM] Sending {len(state['tool_calls'])} tool calls")
+                    chunk = {
+                        "id": request_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"tool_calls": state["tool_calls"]},
+                            "finish_reason": None
+                        }]
+                    }
+                    log.debug(f"[ANTIGRAVITY STREAM] Tool calls chunk: {json.dumps(chunk)[:500]}")
+                    yield f"data: {json.dumps(chunk)}\n\n"
                     state["tool_calls_sent"] = True  # 标记工具调用已发送
 
                 # 发送使用统计
@@ -1842,8 +1835,35 @@ async def chat_completions(
     # 过滤 None 值
     parameters = {k: v for k, v in parameters.items() if v is not None}
 
-    # [ROLLBACK 2026-01-08] 移除 max_tokens 自动调整逻辑，直接透传客户端设置
-    # 原因：自动提升 max_tokens 会导致后端 429 错误
+    # [FIX 2026-01-08] 同步 Anthropic 格式的 max_tokens 保护逻辑
+    # Cursor 等客户端可能设置较小的 max_tokens（如 4096），导致长文本生成被截断
+    MIN_MAX_TOKENS = 16384  # 最小 max_tokens 值（无 thinking 时）
+    MIN_OUTPUT_TOKENS = 16384  # 最小输出 token 数（有 thinking 时）
+    original_max_tokens = parameters.get("max_tokens")
+
+    # 当启用 thinking 时，确保 max_tokens 足够容纳 thinkingBudget + 实际输出
+    # generate_generation_config 中硬编码 thinkingBudget=1024，但我们需要预留更多空间
+    if enable_thinking:
+        # 假设 thinkingBudget 可能很大（用户可能通过其他方式设置）
+        # 为了安全起见，确保 max_tokens 至少为 MIN_MAX_TOKENS + MIN_OUTPUT_TOKENS
+        thinking_budget_estimate = 32000  # 估算最大 thinking budget
+        required_max_tokens = thinking_budget_estimate + MIN_OUTPUT_TOKENS
+        current_max = parameters.get("max_tokens", 0) or 0
+        if isinstance(current_max, int) and current_max < required_max_tokens:
+            parameters["max_tokens"] = required_max_tokens
+            log.info(
+                f"[ANTIGRAVITY] max_tokens 因 thinking 自动提升: {original_max_tokens} -> {required_max_tokens} "
+                f"(thinking_budget_estimate={thinking_budget_estimate}, MIN_OUTPUT_TOKENS={MIN_OUTPUT_TOKENS})"
+            )
+    else:
+        # 无 thinking 时的基础保护
+        current_max = parameters.get("max_tokens", 0) or 0
+        if isinstance(current_max, int) and current_max < MIN_MAX_TOKENS:
+            parameters["max_tokens"] = MIN_MAX_TOKENS
+            log.info(
+                f"[ANTIGRAVITY] max_tokens 自动提升: {original_max_tokens} -> {MIN_MAX_TOKENS} "
+                f"(MIN_MAX_TOKENS={MIN_MAX_TOKENS})"
+            )
 
     # 使用更新后的 enable_thinking（可能已被禁用）
     generation_config = generate_generation_config(parameters, enable_thinking, actual_model)
@@ -1880,9 +1900,8 @@ async def chat_completions(
     # ✅ 新增：上下文长度阈值配置
     # 这些阈值用于主动检测和拒绝过长的上下文，避免 API 返回空响应
     # Cursor 用户可以使用 /summarize 命令来压缩对话历史
-    # [FIX 2026-01-08] 降低阈值以在 API 报错 "Prompt is too long" 之前捕获
-    CONTEXT_WARNING_THRESHOLD = 60000   # 60K tokens - 警告阈值，记录日志
-    CONTEXT_CRITICAL_THRESHOLD = 90000  # 90K tokens - 拒绝阈值，返回错误（API 限制约 100K）
+    CONTEXT_WARNING_THRESHOLD = 80000   # 80K tokens - 警告阈值，记录日志
+    CONTEXT_CRITICAL_THRESHOLD = 120000  # 120K tokens - 拒绝阈值，返回错误
     
     # ✅ 主动拒绝过长的上下文请求
     # 这样可以避免 API 返回空响应，让用户立即知道需要压缩上下文

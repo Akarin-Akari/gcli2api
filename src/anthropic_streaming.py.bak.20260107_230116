@@ -6,7 +6,6 @@ import uuid
 from typing import Any, AsyncIterator, Dict, Optional
 
 from log import log
-from .signature_cache import cache_signature
 
 
 def _sse_event(event: str, data: Dict[str, Any]) -> bytes:
@@ -53,7 +52,6 @@ class _StreamingState:
         self._current_block_type: Optional[str] = None
         self._current_block_index: int = -1
         self._current_thinking_signature: Optional[str] = None
-        self._current_thinking_text: str = ""  # 用于累积 thinking 文本，支持 signature 缓存
 
         self.has_tool_use: bool = False
         self.input_tokens: int = 0
@@ -69,35 +67,12 @@ class _StreamingState:
     def close_block_if_open(self) -> Optional[bytes]:
         if self._current_block_type is None:
             return None
-
-        # 在关闭 thinking 块时，将 signature 写入缓存
-        if (
-            self._current_block_type == "thinking"
-            and self._current_thinking_text
-            and self._current_thinking_signature
-        ):
-            try:
-                success = cache_signature(
-                    thinking_text=self._current_thinking_text,
-                    signature=self._current_thinking_signature,
-                    model=self.model
-                )
-                if success:
-                    log.debug(
-                        f"[SIGNATURE_CACHE] 缓存写入成功: "
-                        f"thinking_len={len(self._current_thinking_text)}, "
-                        f"model={self.model}"
-                    )
-            except Exception as e:
-                log.warning(f"[SIGNATURE_CACHE] 缓存写入失败: {e}")
-
         event = _sse_event(
             "content_block_stop",
             {"type": "content_block_stop", "index": self._current_block_index},
         )
         self._current_block_type = None
         self._current_thinking_signature = None
-        self._current_thinking_text = ""  # 重置 thinking 文本
         return event
 
     def open_text_block(self) -> bytes:
@@ -116,7 +91,6 @@ class _StreamingState:
         idx = self._next_index()
         self._current_block_type = "thinking"
         self._current_thinking_signature = signature
-        self._current_thinking_text = ""  # 重置 thinking 文本累积器
         block: Dict[str, Any] = {"type": "thinking", "thinking": ""}
         if signature:
             block["signature"] = signature
@@ -248,14 +222,6 @@ async def antigravity_sse_to_anthropic_sse(
             if state.has_input_tokens and not message_start_sent:
                 send_message_start(ready_output, input_tokens=state.input_tokens)
 
-            # [FIX 2026-01-08] 提前发送 message_start 以避免流式输出被缓冲
-            # 问题：如果上游延迟发送 usageMetadata，所有事件都会被 enqueue 到 pending_output
-            # 导致流式输出看起来"卡住"，直到流结束才一次性发送
-            # 解决：在收到第一个有效内容时，如果 message_start 还没发送，就使用估算值发送
-            if parts and not message_start_sent:
-                # 有有效内容到来，立即发送 message_start（使用估算的 token 数）
-                send_message_start(ready_output, input_tokens=initial_input_tokens_int)
-
             for part in parts:
                 if not isinstance(part, dict):
                     continue
@@ -315,7 +281,6 @@ async def antigravity_sse_to_anthropic_sse(
                             enqueue(evt)
                     thinking_text = part.get("text", "")
                     if thinking_text:
-                        state._current_thinking_text += thinking_text  # 累积 thinking 文本
                         evt = _sse_event(
                             "content_block_delta",
                             {

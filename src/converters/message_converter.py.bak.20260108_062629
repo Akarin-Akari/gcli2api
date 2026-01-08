@@ -78,11 +78,9 @@ def strip_thinking_from_openai_messages(messages: List[Any]) -> List[Any]:
                     # 如果内容为空，保留一个占位符
                     if not content.strip():
                         content = "..."
-                    # 创建新消息对象，保留 tool_calls
-                    # [FIX 2026-01-08] 必须保留 tool_calls 字段，否则会导致孤儿 tool_result
+                    # 创建新消息对象
                     from src.models import OpenAIChatMessage
-                    tool_calls = getattr(msg, "tool_calls", None)
-                    cleaned_msg = OpenAIChatMessage(role=role, content=content, tool_calls=tool_calls)
+                    cleaned_msg = OpenAIChatMessage(role=role, content=content)
                     cleaned_messages.append(cleaned_msg)
                     continue
 
@@ -101,11 +99,9 @@ def strip_thinking_from_openai_messages(messages: List[Any]) -> List[Any]:
                     if not cleaned_content:
                         cleaned_content = [{"type": "text", "text": "..."}]
 
-                    # 创建新消息对象，保留 tool_calls
-                    # [FIX 2026-01-08] 必须保留 tool_calls 字段，否则会导致孤儿 tool_result
+                    # 创建新消息对象
                     from src.models import OpenAIChatMessage
-                    tool_calls = getattr(msg, "tool_calls", None)
-                    cleaned_msg = OpenAIChatMessage(role=role, content=cleaned_content, tool_calls=tool_calls)
+                    cleaned_msg = OpenAIChatMessage(role=role, content=cleaned_content)
                     cleaned_messages.append(cleaned_msg)
                     continue
 

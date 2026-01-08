@@ -39,14 +39,9 @@ class HttpxClientManager:
 
     @asynccontextmanager
     async def get_streaming_client(
-        self, timeout: float = 600.0, **kwargs
+        self, timeout: float = None, **kwargs
     ) -> AsyncGenerator[httpx.AsyncClient, None]:
-        """
-        获取用于流式请求的HTTP客户端
-
-        默认超时 600 秒（10分钟），适合 thinking 模型的长时间思考
-        如果需要无限等待，可以显式传入 timeout=None
-        """
+        """获取用于流式请求的HTTP客户端（无超时限制）"""
         client_kwargs = await self.get_client_kwargs(timeout=timeout, **kwargs)
 
         # 创建独立的客户端实例用于流式处理
@@ -201,14 +196,10 @@ async def get_streaming_post_context(
     data: Any = None,
     json: Any = None,
     headers: Optional[Dict[str, str]] = None,
-    timeout: float = 600.0,
+    timeout: float = None,
     **kwargs,
 ) -> AsyncGenerator[StreamingContext, None]:
-    """
-    获取流式POST请求的上下文管理器
-
-    默认超时 600 秒（10分钟），适合 thinking 模型的长时间思考
-    """
+    """获取流式POST请求的上下文管理器"""
     async with http_client.get_streaming_client(timeout=timeout, **kwargs) as client:
         stream_ctx = client.stream("POST", url, data=data, json=json, headers=headers)
         streaming_context = StreamingContext(client, stream_ctx)
@@ -221,11 +212,6 @@ async def create_streaming_client_with_kwargs(**kwargs) -> httpx.AsyncClient:
 
     警告：调用者必须确保调用 client.aclose() 来释放资源
     建议使用 get_streaming_client() 上下文管理器代替此方法
-
-    默认超时 600 秒（10分钟），适合 thinking 模型的长时间思考
-    如果调用方需要无限等待，可以显式传入 timeout=None
     """
-    # 默认 600 秒超时，避免无限等待导致 tool call 卡住
-    timeout = kwargs.pop('timeout', 600.0)
-    client_kwargs = await http_client.get_client_kwargs(timeout=timeout, **kwargs)
+    client_kwargs = await http_client.get_client_kwargs(timeout=None, **kwargs)
     return httpx.AsyncClient(**client_kwargs)
