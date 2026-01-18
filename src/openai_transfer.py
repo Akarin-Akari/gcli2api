@@ -241,6 +241,8 @@ async def openai_request_to_gemini_payload(
             "thinkingBudget": thinking_override.get("thinking_budget"),
             "includeThoughts": thinking_override.get("include_thoughts", False),
         }
+        # [FIX 2026-01-17] 移除 thinkingLevel 避免与 thinkingBudget 冲突（官方版本修复）
+        request_data["generationConfig"]["thinkingConfig"].pop("thinkingLevel", None)
     else:  # 如无提供的参数，则为thinking模型添加thinking配置
         thinking_budget = get_thinking_budget(openai_request.model)
         if thinking_budget is not None:
@@ -248,6 +250,8 @@ async def openai_request_to_gemini_payload(
                 "thinkingBudget": thinking_budget,
                 "includeThoughts": should_include_thoughts(openai_request.model),
             }
+            # [FIX 2026-01-17] 移除 thinkingLevel 避免与 thinkingBudget 冲突（官方版本修复）
+            request_data["generationConfig"]["thinkingConfig"].pop("thinkingLevel", None)
 
     # 处理工具定义和配置
     # 首先检查是否有自定义工具

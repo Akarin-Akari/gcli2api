@@ -850,6 +850,8 @@ def build_gemini_payload_from_native(native_request: dict, model_from_path: str)
                 "thinkingBudget": thinking_budget,
                 "includeThoughts": should_include_thoughts(model_from_path)
             }
+            # [FIX 2026-01-17] 移除 thinkingLevel 避免与 thinkingBudget 冲突（官方版本修复）
+            generation_config["thinkingConfig"].pop("thinkingLevel", None)
     else:
         # 如果用户已经提供了thinkingConfig，但没有设置某些字段，填充默认值
         thinking_config = generation_config["thinkingConfig"]
@@ -859,6 +861,8 @@ def build_gemini_payload_from_native(native_request: dict, model_from_path: str)
                 thinking_config["thinkingBudget"] = thinking_budget
         if "includeThoughts" not in thinking_config:
             thinking_config["includeThoughts"] = should_include_thoughts(model_from_path)
+        # [FIX 2026-01-17] 移除 thinkingLevel 避免与 thinkingBudget 冲突（官方版本修复）
+        thinking_config.pop("thinkingLevel", None)
 
     # [Fix 2026-01-12] 移除 _clean_tools_for_gemini 调用，避免 Gemini MCP 无限递归问题
     # if "tools" in request_data and request_data["tools"]:

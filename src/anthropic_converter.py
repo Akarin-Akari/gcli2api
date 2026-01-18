@@ -1096,6 +1096,10 @@ def build_generation_config(payload: Dict[str, Any]) -> tuple[Dict[str, Any], bo
                             f"(防止 429 错误)"
                         )
 
+            # [FIX 2026-01-17] 移除 thinkingLevel 避免与 thinkingBudget 冲突（官方版本修复）
+            # 参考: gcli2api_official PR #291 (fix/thinking-budget-level-conflict)
+            thinking_config.pop("thinkingLevel", None)
+            
             config["thinkingConfig"] = thinking_config
             should_include_thinking = include_thoughts
             if _anthropic_debug_enabled():

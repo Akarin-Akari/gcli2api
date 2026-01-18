@@ -299,6 +299,8 @@ async def normalize_gemini_request(
                 "thinkingBudget": thinking_budget,
                 "includeThoughts": final_include_thoughts
             }
+            # [FIX 2026-01-17] 移除 thinkingLevel 避免与 thinkingBudget 冲突（官方版本修复）
+            generation_config["thinkingConfig"].pop("thinkingLevel", None)
 
         # 2. 搜索模型添加 Google Search
         if is_search_model(model):
@@ -344,31 +346,52 @@ async def normalize_gemini_request(
                 # 优先使用传入的思考预算，否则使用默认值
                 if "thinkingBudget" not in thinking_config:
                     thinking_config["thinkingBudget"] = 1024
+                # [FIX 2026-01-17] 移除 thinkingLevel 避免与 thinkingBudget 冲突（官方版本修复）
+                thinking_config.pop("thinkingLevel", None)
                 if "includeThoughts" not in thinking_config:
                     thinking_config["includeThoughts"] = return_thoughts
 
                 # 检查最后一个 assistant 消息是否以 thinking 块开始
                 contents = result.get("contents", [])
 
-                if not check_last_assistant_has_thinking(contents) and "claude" in model.lower():
-                    # 最后一个 assistant 消息不是以 thinking 块开始，填充思考块避免失效
-                    log.warning(f"[ANTIGRAVITY] 最后一个 assistant 消息不以 thinking 块开始，自动填充思考块")
+                if "claude" in model.lower():
+                    # [FIX 2026-01-17] 移植官方版本：检测是否有工具调用（MCP场景）
+                    # 参考: gcli2api_official PR #291
+                    has_tool_calls = any(
+                        isinstance(content, dict) and 
+                        any(
+                            isinstance(part, dict) and ("functionCall" in part or "function_call" in part)
+                            for part in content.get("parts", [])
+                        )
+                        for content in contents
+                    )
+                    
+                    if has_tool_calls:
+                        # MCP 场景：检测到工具调用，移除 thinkingConfig
+                        log.warning(f"[ANTIGRAVITY] 检测到工具调用（MCP场景），移除 thinkingConfig 避免失效")
+                        generation_config.pop("thinkingConfig", None)
+                    else:
+                        # 非 MCP 场景：填充思考块
+                        if not check_last_assistant_has_thinking(contents):
+                            # 最后一个 assistant 消息不是以 thinking 块开始，填充思考块避免失效
+                            # log.warning(f"[ANTIGRAVITY] 最后一个 assistant 消息不以 thinking 块开始，自动填充思考块")
 
-                    # 找到最后一个 model 角色的 content
-                    for i in range(len(contents) - 1, -1, -1):
-                        content = contents[i]
-                        if isinstance(content, dict) and content.get("role") == "model":
-                            # 在 parts 开头插入思考块（使用官方跳过验证的虚拟签名）
-                            parts = content.get("parts", [])
-                            thinking_part = {
-                                "text": "Continuing from previous context...",
-                                "thoughtSignature": "skip_thought_signature_validator"  # 官方文档推荐的虚拟签名
-                            }
-                            # 如果第一个 part 不是 thinking，则插入
-                            if not parts or not (isinstance(parts[0], dict) and "thoughtSignature" in parts[0]):
-                                content["parts"] = [thinking_part] + parts
-                                log.debug(f"[ANTIGRAVITY] 已在最后一个 assistant 消息开头插入思考块（含跳过验证签名）")
-                            break
+                            # 找到最后一个 model 角色的 content
+                            for i in range(len(contents) - 1, -1, -1):
+                                content = contents[i]
+                                if isinstance(content, dict) and content.get("role") == "model":
+                                    # 在 parts 开头插入思考块（使用官方跳过验证的虚拟签名）
+                                    parts = content.get("parts", [])
+                                    thinking_part = {
+                                        "text": "...",
+                                        # "thought": True,  # 标记为思考块
+                                        "thoughtSignature": "skip_thought_signature_validator"  # 官方文档推荐的虚拟签名
+                                    }
+                                    # 如果第一个 part 不是 thinking，则插入
+                                    if not parts or not (isinstance(parts[0], dict) and ("thought" in parts[0] or "thoughtSignature" in parts[0])):
+                                        content["parts"] = [thinking_part] + parts
+                                        log.debug(f"[ANTIGRAVITY] 已在最后一个 assistant 消息开头插入思考块（含跳过验证签名）")
+                                    break
 
             # 移除 -thinking 后缀
             model = model.replace("-thinking", "")

@@ -520,6 +520,10 @@ def generate_generation_config(
             "includeThoughts": True,
             "thinkingBudget": thinking_budget
         }
+        
+        # [FIX 2026-01-17] 移除 thinkingLevel 避免与 thinkingBudget 冲突（官方版本修复）
+        # 参考: gcli2api_official PR #291 (fix/thinking-budget-level-conflict)
+        config_dict["thinkingConfig"].pop("thinkingLevel", None)
 
         # Claude 思考模型：删除 topP 参数
         if "claude" in model_name.lower():
