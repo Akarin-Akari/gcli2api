@@ -19,12 +19,13 @@ Date: 2026-01-07
 """
 
 import hashlib
+import os
 import threading
 import time
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 
 log = logging.getLogger("gcli2api.signature_cache")
 
@@ -33,7 +34,8 @@ log = logging.getLogger("gcli2api.signature_cache")
 class CacheEntry:
     """缓存条目数据结构"""
     signature: str
-    thinking_text: str
+    thinking_text: str  # 完整的 thinking 文本（用于 fallback 恢复）
+    thinking_text_preview: str  # 前 200 字符（用于调试日志）
     timestamp: float
     access_count: int = 0
     model: Optional[str] = None
@@ -109,10 +111,44 @@ class SignatureCache:
         """
         self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
         self._lock = threading.Lock()
+
+        # [FIX 2026-01-16] 新增：工具ID签名缓存 (Layer 1)
+        # 用于通过 tool_id 直接查找签名，作为工具ID编码机制的补充
+        self._tool_signatures: Dict[str, CacheEntry] = {}
+        self._tool_lock = threading.Lock()
+
+        # [FIX 2026-01-17] 新增：Session级别签名缓存 (Layer 3)
+        # 用于通过 session_id 直接查找签名，支持会话级别的签名复用
+        self._session_signatures: Dict[str, CacheEntry] = {}
+        self._session_lock = threading.Lock()
+
         self._max_size = max_size
         self._ttl_seconds = ttl_seconds
         self._key_prefix_length = key_prefix_length
         self._stats = CacheStats()
+
+        # [P1-2] 三层缓存统计（2026-01-17 新增）
+        self._layer_stats = {
+            # Layer 1: 工具ID缓存统计
+            "tool_cache_hits": 0,
+            "tool_cache_misses": 0,
+
+            # Layer 2: Thinking 内容哈希缓存统计（主缓存）
+            "cache_hits": 0,
+            "cache_misses": 0,
+
+            # Layer 3: Session 级别缓存统计
+            "session_cache_hits": 0,
+            "session_cache_misses": 0,
+
+            # Fallback 机制统计
+            "last_signature_hits": 0,
+            "last_signature_misses": 0,
+
+            # 总体恢复统计
+            "total_recoveries": 0,
+            "successful_recoveries": 0,
+        }
 
         log.info(
             f"[SIGNATURE_CACHE] 初始化缓存管理器: "
@@ -181,6 +217,161 @@ class SignatureCache:
         text_prefix = normalized_text[:self._key_prefix_length]
         return hashlib.md5(text_prefix.encode('utf-8')).hexdigest()
 
+    def cache_tool_signature(self, tool_id: str, signature: str) -> bool:
+        """
+        缓存工具ID到签名的映射 (Layer 1)
+
+        Args:
+            tool_id: 工具调用ID
+            signature: 对应的 signature 值
+
+        Returns:
+            是否成功缓存
+        """
+        if not tool_id or not signature:
+            return False
+
+        if not self._is_valid_signature(signature):
+            return False
+
+        with self._tool_lock:
+            self._tool_signatures[tool_id] = CacheEntry(
+                signature=signature,
+                thinking_text="",  # 工具ID缓存不需要thinking_text
+                thinking_text_preview="",
+                timestamp=time.time()
+            )
+            log.debug(f"[SIGNATURE_CACHE] 工具ID签名缓存成功: tool_id={tool_id}, sig={signature[:20]}...")
+        return True
+
+    def get_tool_signature(self, tool_id: str) -> Optional[str]:
+        """
+        通过工具ID获取签名 (Layer 1)
+
+        Args:
+            tool_id: 工具调用ID
+
+        Returns:
+            缓存的 signature，如果未命中或已过期则返回 None
+        """
+        if not tool_id:
+            return None
+
+        with self._tool_lock:
+            entry = self._tool_signatures.get(tool_id)
+            if entry:
+                if not entry.is_expired(self._ttl_seconds):
+                    # [P1-2] 统计：Layer 1 缓存命中
+                    self._layer_stats["tool_cache_hits"] += 1
+                    log.debug(f"[SIGNATURE_CACHE] 工具ID签名缓存命中: tool_id={tool_id}")
+                    return entry.signature
+                else:
+                    # 过期删除
+                    del self._tool_signatures[tool_id]
+                    self._layer_stats["tool_cache_misses"] += 1
+                    log.debug(f"[SIGNATURE_CACHE] 工具ID签名缓存过期: tool_id={tool_id}")
+            else:
+                # [P1-2] 统计：Layer 1 缓存未命中
+                self._layer_stats["tool_cache_misses"] += 1
+        return None
+
+    def cache_session_signature(
+        self,
+        session_id: str,
+        signature: str,
+        thinking_text: str = ""
+    ) -> bool:
+        """
+        缓存 Session 级别的签名 (Layer 3)
+
+        Args:
+            session_id: 会话ID或会话指纹
+            signature: 对应的 signature 值
+            thinking_text: 可选的 thinking 文本（用于调试和验证）
+
+        Returns:
+            是否成功缓存
+        """
+        if not session_id or not signature:
+            log.debug("[SIGNATURE_CACHE] 跳过 Session 缓存：session_id 或 signature 为空")
+            return False
+
+        if not self._is_valid_signature(signature):
+            log.warning(f"[SIGNATURE_CACHE] 跳过 Session 缓存：signature 格式无效")
+            return False
+
+        with self._session_lock:
+            self._session_signatures[session_id] = CacheEntry(
+                signature=signature,
+                thinking_text=thinking_text,
+                thinking_text_preview=thinking_text[:200] if thinking_text else "",
+                timestamp=time.time()
+            )
+            log.info(
+                f"[SIGNATURE_CACHE] Session 签名缓存成功: "
+                f"session_id={session_id[:16]}..., sig={signature[:20]}..."
+            )
+        return True
+
+    def get_session_signature(self, session_id: str) -> Optional[str]:
+        """
+        通过 Session ID 获取签名 (Layer 3)
+
+        Args:
+            session_id: 会话ID或会话指纹
+
+        Returns:
+            缓存的 signature，如果未命中或已过期则返回 None
+        """
+        if not session_id:
+            return None
+
+        with self._session_lock:
+            entry = self._session_signatures.get(session_id)
+            if entry:
+                if not entry.is_expired(self._ttl_seconds):
+                    # [P1-2] 统计：Layer 3 缓存命中
+                    self._layer_stats["session_cache_hits"] += 1
+                    log.info(f"[SIGNATURE_CACHE] Session 签名缓存命中: session_id={session_id[:16]}...")
+                    return entry.signature
+                else:
+                    # 过期删除
+                    del self._session_signatures[session_id]
+                    self._layer_stats["session_cache_misses"] += 1
+                    log.debug(f"[SIGNATURE_CACHE] Session 签名缓存过期: session_id={session_id[:16]}...")
+            else:
+                # [P1-2] 统计：Layer 3 缓存未命中
+                self._layer_stats["session_cache_misses"] += 1
+        return None
+
+    def get_session_signature_with_text(self, session_id: str) -> Optional[Tuple[str, str]]:
+        """
+        通过 Session ID 获取签名及其对应的 thinking 文本 (Layer 3)
+
+        Args:
+            session_id: 会话ID或会话指纹
+
+        Returns:
+            (signature, thinking_text) 元组，如果未命中或已过期则返回 None
+        """
+        if not session_id:
+            return None
+
+        with self._session_lock:
+            entry = self._session_signatures.get(session_id)
+            if entry:
+                if not entry.is_expired(self._ttl_seconds):
+                    log.info(
+                        f"[SIGNATURE_CACHE] Session 签名缓存命中（含文本）: "
+                        f"session_id={session_id[:16]}..., thinking_len={len(entry.thinking_text)}"
+                    )
+                    return (entry.signature, entry.thinking_text)
+                else:
+                    # 过期删除
+                    del self._session_signatures[session_id]
+                    log.debug(f"[SIGNATURE_CACHE] Session 签名缓存过期: session_id={session_id[:16]}...")
+        return None
+
     def set(
         self,
         thinking_text: str,
@@ -215,7 +406,8 @@ class SignatureCache:
             # 创建缓存条目
             entry = CacheEntry(
                 signature=signature,
-                thinking_text=thinking_text[:200],  # 只保存前 200 字符用于调试
+                thinking_text=thinking_text,  # 保存完整的 thinking 文本（用于 fallback 恢复）
+                thinking_text_preview=thinking_text[:200],  # 只保存前 200 字符用于调试
                 timestamp=time.time(),
                 model=model
             )
@@ -250,6 +442,12 @@ class SignatureCache:
 
         Returns:
             缓存的 signature，如果未命中或已过期则返回 None
+
+        [FIX 2026-01-09] 新增完整文本验证：
+        由于缓存 key 只使用前 500 字符的哈希，可能发生哈希冲突。
+        例如：thinking A 和 thinking B 前 500 字符相同，会共享同一个 key。
+        如果先缓存 A 再缓存 B，那么查询 A 时会错误地返回 B 的 signature。
+        修复：在返回 signature 之前，验证完整的 thinking 文本是否匹配。
         """
         if not thinking_text:
             return None
@@ -258,9 +456,14 @@ class SignatureCache:
         if not key:
             return None
 
+        # 规范化查询文本，用于后续验证
+        normalized_query = self._normalize_thinking_text(thinking_text)
+
         with self._lock:
             if key not in self._cache:
                 self._stats.misses += 1
+                # [P1-2] 统计：Layer 2 缓存未命中
+                self._layer_stats["cache_misses"] += 1
                 log.debug(f"[SIGNATURE_CACHE] 缓存未命中: key={key[:16]}...")
                 return None
 
@@ -271,17 +474,38 @@ class SignatureCache:
                 del self._cache[key]
                 self._stats.expirations += 1
                 self._stats.misses += 1
+                # [P1-2] 统计：Layer 2 缓存未命中（过期）
+                self._layer_stats["cache_misses"] += 1
                 log.debug(f"[SIGNATURE_CACHE] 缓存已过期: key={key[:16]}...")
+                return None
+
+            # [FIX 2026-01-09] 验证完整文本匹配，防止哈希冲突导致的 signature 不匹配
+            # 规范化缓存中的文本
+            normalized_cached = self._normalize_thinking_text(entry.thinking_text)
+            if normalized_query != normalized_cached:
+                # 哈希冲突：key 相同但文本不同
+                log.warning(
+                    f"[SIGNATURE_CACHE] 哈希冲突检测到！Key 匹配但文本不同: "
+                    f"key={key[:16]}..., query_len={len(normalized_query)}, "
+                    f"cached_len={len(normalized_cached)}, "
+                    f"query_preview='{normalized_query[:50]}...', "
+                    f"cached_preview='{normalized_cached[:50]}...'"
+                )
+                self._stats.misses += 1
+                # [P1-2] 统计：Layer 2 缓存未命中（哈希冲突）
+                self._layer_stats["cache_misses"] += 1
                 return None
 
             # 更新访问顺序（LRU）
             self._cache.move_to_end(key)
             entry.access_count += 1
             self._stats.hits += 1
+            # [P1-2] 统计：Layer 2 缓存命中
+            self._layer_stats["cache_hits"] += 1
 
             log.info(
-                f"[SIGNATURE_CACHE] 缓存命中: key={key[:16]}..., "
-                f"thinking={thinking_text[:50]}..., "
+                f"[SIGNATURE_CACHE] 缓存命中（文本验证通过）: key={key[:16]}..., "
+                f"thinking_len={len(thinking_text)}, "
                 f"access_count={entry.access_count}"
             )
             return entry.signature
@@ -349,15 +573,70 @@ class SignatureCache:
         """
         获取缓存统计信息
 
+        [P1-2] 增强版：包含三层缓存的详细统计信息
+
         Returns:
             包含命中率、写入次数等统计信息的字典
         """
         with self._lock:
+            # 基础统计（来自 CacheStats）
             stats = self._stats.to_dict()
             stats["cache_size"] = len(self._cache)
             stats["max_size"] = self._max_size
             stats["ttl_seconds"] = self._ttl_seconds
+
+            # [P1-2] 三层缓存统计
+            layer_stats = self._layer_stats.copy()
+
+            # 计算各层命中率
+            total_tool_attempts = layer_stats["tool_cache_hits"] + layer_stats["tool_cache_misses"]
+            layer_stats["tool_cache_hit_rate"] = (
+                layer_stats["tool_cache_hits"] / total_tool_attempts * 100
+                if total_tool_attempts > 0 else 0.0
+            )
+
+            total_cache_attempts = layer_stats["cache_hits"] + layer_stats["cache_misses"]
+            layer_stats["cache_hit_rate"] = (
+                layer_stats["cache_hits"] / total_cache_attempts * 100
+                if total_cache_attempts > 0 else 0.0
+            )
+
+            total_session_attempts = layer_stats["session_cache_hits"] + layer_stats["session_cache_misses"]
+            layer_stats["session_cache_hit_rate"] = (
+                layer_stats["session_cache_hits"] / total_session_attempts * 100
+                if total_session_attempts > 0 else 0.0
+            )
+
+            # 计算总恢复成功率
+            layer_stats["recovery_success_rate"] = (
+                layer_stats["successful_recoveries"] / layer_stats["total_recoveries"] * 100
+                if layer_stats["total_recoveries"] > 0 else 0.0
+            )
+
+            # 添加缓存大小信息
+            layer_stats["tool_cache_size"] = len(self._tool_signatures)
+            layer_stats["session_cache_size"] = len(self._session_signatures)
+
+            # 合并到主统计字典
+            stats["layer_stats"] = layer_stats
+
             return stats
+
+    def reset_stats(self) -> None:
+        """
+        重置统计信息
+
+        [P1-2] 重置所有统计计数器，包括三层缓存统计
+        """
+        with self._lock:
+            # 重置基础统计
+            self._stats = CacheStats()
+
+            # [P1-2] 重置三层缓存统计
+            for key in self._layer_stats:
+                self._layer_stats[key] = 0
+
+            log.info("[SIGNATURE_CACHE] 统计信息已重置")
 
     def _is_valid_signature(self, signature: str) -> bool:
         """
@@ -441,10 +720,12 @@ def reset_signature_cache() -> None:
             log.info("[SIGNATURE_CACHE] 重置全局缓存实例")
 
 
-# 便捷函数
+# 便捷函数 - [FIX 2026-01-12] 修改为支持迁移模式代理
 def cache_signature(thinking_text: str, signature: str, model: Optional[str] = None) -> bool:
     """
     缓存 signature（便捷函数）
+
+    [FIX 2026-01-12] 添加迁移模式支持，当启用迁移模式时代理到 CacheFacade。
 
     Args:
         thinking_text: thinking 块的文本内容
@@ -454,6 +735,13 @@ def cache_signature(thinking_text: str, signature: str, model: Optional[str] = N
     Returns:
         是否成功缓存
     """
+    # [FIX 2026-01-12] 迁移模式支持
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade:
+            log.debug("[SIGNATURE_CACHE] cache_signature: 代理到迁移门面")
+            return facade.cache_signature(thinking_text, signature, model)
+
     return get_signature_cache().set(thinking_text, signature, model)
 
 
@@ -461,12 +749,21 @@ def get_cached_signature(thinking_text: str) -> Optional[str]:
     """
     获取缓存的 signature（便捷函数）
 
+    [FIX 2026-01-12] 添加迁移模式支持，当启用迁移模式时代理到 CacheFacade。
+
     Args:
         thinking_text: thinking 块的文本内容
 
     Returns:
         缓存的 signature，如果未命中则返回 None
     """
+    # [FIX 2026-01-12] 迁移模式支持
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade:
+            log.debug("[SIGNATURE_CACHE] get_cached_signature: 代理到迁移门面")
+            return facade.get_cached_signature(thinking_text)
+
     return get_signature_cache().get(thinking_text)
 
 
@@ -474,7 +771,534 @@ def get_cache_stats() -> Dict[str, Any]:
     """
     获取缓存统计信息（便捷函数）
 
+    [FIX 2026-01-12] 添加迁移模式支持，当启用迁移模式时代理到 CacheFacade。
+
     Returns:
         缓存统计信息字典
     """
+    # [FIX 2026-01-12] 迁移模式支持
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade:
+            log.debug("[SIGNATURE_CACHE] get_cache_stats: 代理到迁移门面")
+            return facade.get_cache_stats()
+
     return get_signature_cache().get_stats()
+
+
+def get_last_signature() -> Optional[str]:
+    """
+    获取最近缓存的 signature（用于 fallback）
+
+    [FIX 2026-01-12] 添加迁移模式支持，当启用迁移模式时代理到 CacheFacade。
+    [FIX 2026-01-17] 添加 SQLite 持久化支持，当内存缓存为空时从 SQLite 读取。
+
+    当 Cursor 不保留历史消息中的 thinking 内容时，
+    可以使用最近缓存的 signature 作为 fallback，
+    从而保持 thinking 模式的连续性。
+
+    Returns:
+        最近缓存的有效 signature，如果没有则返回 None
+    """
+    # [FIX 2026-01-12] 迁移模式支持
+    # [FIX 2026-01-17] 修复迁移模式下缺少 fallback 的问题
+    # 问题：当 facade.get_last_signature() 返回 None 时，没有 fallback 到本地缓存
+    # 解决：先尝试 facade，如果返回 None，再尝试本地缓存
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade:
+            log.debug("[SIGNATURE_CACHE] get_last_signature: 代理到迁移门面")
+            result = facade.get_last_signature()
+            if result:
+                return result
+            # [FIX 2026-01-17] Fallback 到本地缓存
+            log.debug("[SIGNATURE_CACHE] get_last_signature: 迁移门面返回 None，尝试本地缓存")
+
+    cache = get_signature_cache()
+    with cache._lock:
+        if cache._cache:
+            # OrderedDict 保持插入顺序，最后一个是最近添加的
+            # 从后往前遍历，找到第一个未过期的条目
+            for key in reversed(cache._cache.keys()):
+                entry = cache._cache[key]
+                if not entry.is_expired(cache._ttl_seconds):
+                    log.info(f"[SIGNATURE_CACHE] get_last_signature: 找到有效的最近 signature, "
+                            f"key={key[:16]}..., age={time.time() - entry.timestamp:.1f}s")
+                    return entry.signature
+                else:
+                    log.debug(f"[SIGNATURE_CACHE] get_last_signature: 跳过过期条目 key={key[:16]}...")
+
+    # [FIX 2026-01-17] 内存缓存为空时，尝试从 SQLite 读取
+    # 这是解决服务器重启后缓存丢失问题的关键
+    log.debug("[SIGNATURE_CACHE] get_last_signature: 内存缓存为空，尝试从 SQLite 读取")
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade:
+            try:
+                db_result = facade.get_last_session_signature_from_db()
+                if db_result:
+                    signature, thinking_text = db_result
+                    log.info(f"[SIGNATURE_CACHE] get_last_signature: 从 SQLite 恢复 signature, sig_len={len(signature)}")
+                    return signature
+            except Exception as e:
+                log.warning(f"[SIGNATURE_CACHE] get_last_signature: 从 SQLite 读取失败: {e}")
+
+    log.debug("[SIGNATURE_CACHE] get_last_signature: 所有来源都为空")
+    return None
+
+
+def get_last_signature_with_text() -> Optional[tuple]:
+    """
+    获取最近缓存的 signature 及其对应的 thinking 文本（用于 fallback）
+
+    [FIX 2026-01-09] 这是修复 "Invalid signature in thinking block" 错误的关键函数。
+    [FIX 2026-01-12] 添加迁移模式支持，当启用迁移模式时代理到 CacheFacade。
+
+    问题根源：
+    - Claude API 的 signature 是与特定的 thinking 内容加密绑定的
+    - 之前的 fallback 机制使用 "..." 作为占位文本，但配合缓存的 signature
+    - 这导致 signature 与 thinking 内容不匹配，触发 400 错误
+
+    解决方案：
+    - 返回 (signature, thinking_text) 元组
+    - 调用方使用原始的 thinking_text 而不是占位符
+
+    Returns:
+        (signature, thinking_text) 元组，如果没有则返回 None
+    """
+    # [FIX 2026-01-12] 迁移模式支持
+    # [FIX 2026-01-17] 修复迁移模式下缺少 fallback 的问题
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade:
+            log.debug("[SIGNATURE_CACHE] get_last_signature_with_text: 代理到迁移门面")
+            result = facade.get_last_signature_with_text()
+            if result:
+                return result
+            # [FIX 2026-01-17] Fallback 到本地缓存
+            log.debug("[SIGNATURE_CACHE] get_last_signature_with_text: 迁移门面返回 None，尝试本地缓存")
+
+    cache = get_signature_cache()
+    with cache._lock:
+        if not cache._cache:
+            log.debug("[SIGNATURE_CACHE] get_last_signature_with_text: 缓存为空")
+            return None
+
+        # OrderedDict 保持插入顺序，最后一个是最近添加的
+        # 从后往前遍历，找到第一个未过期的条目
+        for key in reversed(cache._cache.keys()):
+            entry = cache._cache[key]
+            if not entry.is_expired(cache._ttl_seconds):
+                log.info(f"[SIGNATURE_CACHE] get_last_signature_with_text: 找到有效的最近条目, "
+                        f"key={key[:16]}..., age={time.time() - entry.timestamp:.1f}s, "
+                        f"thinking_len={len(entry.thinking_text)}")
+                return (entry.signature, entry.thinking_text)
+            else:
+                log.debug(f"[SIGNATURE_CACHE] get_last_signature_with_text: 跳过过期条目 key={key[:16]}...")
+
+        log.debug("[SIGNATURE_CACHE] get_last_signature_with_text: 所有条目都已过期")
+        return None
+
+
+def cache_tool_signature(tool_id: str, signature: str) -> bool:
+    """
+    缓存工具ID到签名的映射（便捷函数）
+
+    [FIX 2026-01-17] 添加持久化支持：在迁移模式下同时写入内存和SQLite
+
+    Args:
+        tool_id: 工具调用ID
+        signature: 对应的 signature 值
+
+    Returns:
+        是否成功缓存
+    """
+    # 始终写入内存缓存
+    memory_result = get_signature_cache().cache_tool_signature(tool_id, signature)
+
+    # [FIX 2026-01-17] 迁移模式下同时写入 SQLite 持久化
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade and hasattr(facade, 'cache_tool_signature'):
+            try:
+                db_result = facade.cache_tool_signature(tool_id, signature)
+                log.debug(f"[SIGNATURE_CACHE] cache_tool_signature: 持久化到SQLite, result={db_result}")
+            except Exception as e:
+                log.warning(f"[SIGNATURE_CACHE] cache_tool_signature: 持久化失败: {e}")
+
+    return memory_result
+
+
+def get_tool_signature(tool_id: str) -> Optional[str]:
+    """
+    通过工具ID获取签名（便捷函数）
+
+    [FIX 2026-01-17] 添加持久化支持：先查内存，再查SQLite
+
+    Args:
+        tool_id: 工具调用ID
+
+    Returns:
+        缓存的 signature，如果未命中则返回 None
+    """
+    # 先查内存缓存
+    result = get_signature_cache().get_tool_signature(tool_id)
+    if result:
+        return result
+
+    # [FIX 2026-01-17] 内存未命中，尝试从 SQLite 持久化恢复
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade and hasattr(facade, 'get_tool_signature'):
+            try:
+                db_result = facade.get_tool_signature(tool_id)
+                if db_result:
+                    log.info(f"[SIGNATURE_CACHE] get_tool_signature: 从SQLite恢复, tool_id={tool_id[:20]}...")
+                    # 回填到内存缓存
+                    get_signature_cache().cache_tool_signature(tool_id, db_result)
+                    return db_result
+            except Exception as e:
+                log.warning(f"[SIGNATURE_CACHE] get_tool_signature: SQLite查询失败: {e}")
+
+    return None
+
+
+# ==================== Session 缓存便捷函数 (Layer 3) ====================
+
+
+def generate_session_fingerprint(messages: List[Dict]) -> str:
+    """
+    生成会话指纹（基于第一条用户消息的哈希）
+
+    用于 Session 级别的签名缓存，通过会话指纹识别相同的对话上下文。
+
+    Args:
+        messages: 消息列表
+
+    Returns:
+        MD5 哈希的前 16 位，如果无法生成则返回空字符串
+    """
+    if not messages:
+        return ""
+
+    # 查找第一条用户消息
+    first_user_msg = None
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            first_user_msg = msg
+            break
+
+    # 如果没有用户消息，尝试使用系统消息
+    if not first_user_msg:
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                first_user_msg = msg
+                break
+
+    if not first_user_msg:
+        log.debug("[SIGNATURE_CACHE] 无法生成 Session 指纹：没有用户或系统消息")
+        return ""
+
+    # 提取消息内容
+    content = first_user_msg.get("content", "")
+    if isinstance(content, list):
+        # 处理多模态内容
+        text_parts = [
+            item.get("text", "") for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        content = " ".join(text_parts)
+
+    if not content:
+        log.debug("[SIGNATURE_CACHE] 无法生成 Session 指纹：消息内容为空")
+        return ""
+
+    # 生成 MD5 哈希的前 16 位
+    fingerprint = hashlib.md5(content.encode('utf-8')).hexdigest()[:16]
+    log.debug(f"[SIGNATURE_CACHE] 生成 Session 指纹: {fingerprint}, content_len={len(content)}")
+    return fingerprint
+
+
+def cache_session_signature(session_id: str, signature: str, thinking_text: str = "") -> bool:
+    """
+    缓存 Session 级别的签名（便捷函数）
+
+    [FIX 2026-01-17] 添加持久化支持：在迁移模式下同时写入内存和SQLite
+
+    Args:
+        session_id: 会话ID或会话指纹
+        signature: 对应的 signature 值
+        thinking_text: 可选的 thinking 文本
+
+    Returns:
+        是否成功缓存
+    """
+    # 始终写入内存缓存
+    memory_result = get_signature_cache().cache_session_signature(session_id, signature, thinking_text)
+
+    # [FIX 2026-01-17] 迁移模式下同时写入 SQLite 持久化
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade and hasattr(facade, 'cache_session_signature'):
+            try:
+                db_result = facade.cache_session_signature(session_id, signature, thinking_text)
+                log.debug(f"[SIGNATURE_CACHE] cache_session_signature: 持久化到SQLite, result={db_result}")
+            except Exception as e:
+                log.warning(f"[SIGNATURE_CACHE] cache_session_signature: 持久化失败: {e}")
+
+    return memory_result
+
+
+def get_session_signature(session_id: str) -> Optional[str]:
+    """
+    通过 Session ID 获取签名（便捷函数）
+
+    [FIX 2026-01-17] 添加持久化支持：先查内存，再查SQLite
+
+    Args:
+        session_id: 会话ID或会话指纹
+
+    Returns:
+        缓存的 signature，如果未命中则返回 None
+    """
+    # 先查内存缓存
+    result = get_signature_cache().get_session_signature(session_id)
+    if result:
+        return result
+
+    # [FIX 2026-01-17] 内存未命中，尝试从 SQLite 持久化恢复
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade and hasattr(facade, 'get_session_signature'):
+            try:
+                db_result = facade.get_session_signature(session_id)
+                if db_result:
+                    signature, thinking_text = db_result
+                    log.info(f"[SIGNATURE_CACHE] get_session_signature: 从SQLite恢复, session_id={session_id[:16]}...")
+                    # 回填到内存缓存
+                    get_signature_cache().cache_session_signature(session_id, signature, thinking_text)
+                    return signature
+            except Exception as e:
+                log.warning(f"[SIGNATURE_CACHE] get_session_signature: SQLite查询失败: {e}")
+
+    return None
+
+
+def get_session_signature_with_text(session_id: str) -> Optional[Tuple[str, str]]:
+    """
+    通过 Session ID 获取签名及其对应的 thinking 文本（便捷函数）
+
+    [FIX 2026-01-17] 添加持久化支持：先查内存，再查SQLite
+
+    Args:
+        session_id: 会话ID或会话指纹
+
+    Returns:
+        (signature, thinking_text) 元组，如果未命中则返回 None
+    """
+    # 先查内存缓存
+    result = get_signature_cache().get_session_signature_with_text(session_id)
+    if result:
+        return result
+
+    # [FIX 2026-01-17] 内存未命中，尝试从 SQLite 持久化恢复
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade and hasattr(facade, 'get_session_signature'):
+            try:
+                db_result = facade.get_session_signature(session_id)
+                if db_result:
+                    signature, thinking_text = db_result
+                    log.info(f"[SIGNATURE_CACHE] get_session_signature_with_text: 从SQLite恢复, session_id={session_id[:16]}...")
+                    # 回填到内存缓存
+                    get_signature_cache().cache_session_signature(session_id, signature, thinking_text)
+                    return db_result
+            except Exception as e:
+                log.warning(f"[SIGNATURE_CACHE] get_session_signature_with_text: SQLite查询失败: {e}")
+
+    return None
+
+
+# ==================== 迁移门面代理（Phase 3 集成）====================
+#
+# 提供渐进式迁移支持，通过环境变量或运行时配置控制是否启用迁移适配器。
+# 当启用迁移模式时，上述函数的调用会被代理到 cache_facade 模块。
+#
+# 使用方式：
+#   1. 设置环境变量 CACHE_USE_MIGRATION_ADAPTER=true
+#   2. 或在运行时调用 enable_migration_mode()
+#
+# Author: Claude Opus 4.5 (浮浮酱)
+# Date: 2026-01-10
+# ================================================================
+
+
+_ENV_USE_MIGRATION = "CACHE_USE_MIGRATION_ADAPTER"
+_migration_mode_enabled: Optional[bool] = None
+_migration_facade = None
+_migration_lock = threading.RLock()  # 使用可重入锁避免嵌套调用死锁
+_migration_mode_logged = False  # 用于只在第一次调用时记录日志
+
+
+def _is_migration_mode() -> bool:
+    """
+    检查是否启用迁移模式
+
+    [FIX 2026-01-12] 默认启用迁移模式，以确保 DUAL_WRITE 架构生效
+
+    优先级：
+    1. 运行时设置的 _migration_mode_enabled
+    2. 环境变量 CACHE_USE_MIGRATION_ADAPTER (设为 false/0/no/off 可禁用)
+    3. 默认值: True (启用)
+    """
+    global _migration_mode_enabled, _migration_mode_logged
+
+    if _migration_mode_enabled is not None:
+        return _migration_mode_enabled
+
+    env_value = os.environ.get(_ENV_USE_MIGRATION, "").lower()
+    # [FIX 2026-01-12] 只有明确设置为 false 时才禁用，否则默认启用
+    if env_value in ("false", "0", "no", "off"):
+        result = False
+    else:
+        # 默认启用迁移模式
+        result = True
+
+    # 首次调用时记录日志
+    if not _migration_mode_logged:
+        _migration_mode_logged = True
+        env_display = env_value if env_value else "(未设置)"
+        log.info(f"[SIGNATURE_CACHE] 迁移模式检查: 环境变量={env_display}, 结果={'启用' if result else '禁用'}")
+
+    return result
+
+
+def _get_migration_facade():
+    """获取迁移门面实例（延迟初始化）"""
+    global _migration_facade
+
+    if _migration_facade is None:
+        with _migration_lock:
+            if _migration_facade is None:
+                try:
+                    # 支持多种导入方式
+                    try:
+                        from cache.cache_facade import get_cache_facade
+                    except ImportError:
+                        from .cache.cache_facade import get_cache_facade
+                    _migration_facade = get_cache_facade()
+                    log.info("[SIGNATURE_CACHE] 迁移门面初始化成功")
+                except ImportError as e:
+                    log.warning(f"[SIGNATURE_CACHE] 无法导入迁移门面: {e}")
+                    return None
+                except Exception as e:
+                    log.error(f"[SIGNATURE_CACHE] 迁移门面初始化失败: {e}")
+                    return None
+
+    return _migration_facade
+
+
+def enable_migration_mode() -> None:
+    """
+    启用迁移模式
+
+    启用后，所有缓存操作将通过 CacheFacade 进行，
+    由 CacheFacade 决定使用旧缓存还是新的迁移适配器。
+    """
+    global _migration_mode_enabled
+
+    with _migration_lock:
+        if not _migration_mode_enabled:
+            _migration_mode_enabled = True
+            facade = _get_migration_facade()
+            if facade:
+                facade.enable_migration_adapter()
+            log.info("[SIGNATURE_CACHE] 迁移模式已启用")
+
+
+def disable_migration_mode() -> None:
+    """
+    禁用迁移模式
+
+    禁用后，恢复使用原有的 SignatureCache 实现。
+    """
+    global _migration_mode_enabled
+
+    with _migration_lock:
+        if _migration_mode_enabled:
+            _migration_mode_enabled = False
+            facade = _get_migration_facade()
+            if facade:
+                facade.disable_migration_adapter()
+            log.info("[SIGNATURE_CACHE] 迁移模式已禁用")
+
+
+def is_migration_mode_enabled() -> bool:
+    """检查迁移模式是否已启用"""
+    return _is_migration_mode()
+
+
+def get_migration_status() -> Dict[str, Any]:
+    """
+    获取迁移状态
+
+    Returns:
+        包含迁移模式状态和详细信息的字典
+    """
+    status = {
+        "migration_mode_enabled": _is_migration_mode(),
+        "runtime_override": _migration_mode_enabled,
+        "env_var": os.environ.get(_ENV_USE_MIGRATION, ""),
+    }
+
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade:
+            status["facade_status"] = facade.get_migration_status()
+
+    return status
+
+
+def set_migration_phase(phase: str) -> None:
+    """
+    设置迁移阶段
+
+    Args:
+        phase: 阶段名称 (LEGACY_ONLY, DUAL_WRITE, NEW_PREFERRED, NEW_ONLY)
+
+    Note:
+        需要先启用迁移模式才能设置迁移阶段
+    """
+    if not _is_migration_mode():
+        log.warning(
+            "[SIGNATURE_CACHE] 设置迁移阶段需要先启用迁移模式。"
+            "请先调用 enable_migration_mode() 或设置环境变量 CACHE_USE_MIGRATION_ADAPTER=true"
+        )
+        return
+
+    facade = _get_migration_facade()
+    if facade:
+        facade.set_migration_phase(phase)
+        log.info(f"[SIGNATURE_CACHE] 迁移阶段已设置为: {phase}")
+
+
+def reset_cache_stats() -> None:
+    """
+    重置缓存统计信息（便捷函数）
+
+    [P1-2] 重置所有统计计数器，包括三层缓存统计
+
+    Note:
+        如果启用了迁移模式，会同时重置迁移门面的统计信息
+    """
+    # 重置本地缓存统计
+    get_signature_cache().reset_stats()
+
+    # [P1-2] 如果启用了迁移模式，也重置迁移门面的统计
+    if _is_migration_mode():
+        facade = _get_migration_facade()
+        if facade and hasattr(facade, 'reset_stats'):
+            facade.reset_stats()
+            log.info("[SIGNATURE_CACHE] reset_cache_stats: 已重置迁移门面统计")
+
+    log.info("[SIGNATURE_CACHE] reset_cache_stats: 统计信息已重置")

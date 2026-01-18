@@ -6,6 +6,8 @@ This module is used by both OpenAI compatibility layer and native Gemini endpoin
 import asyncio
 import gc
 import json
+import random
+import time
 from datetime import datetime, timezone
 
 from fastapi import Response
@@ -38,6 +40,35 @@ from .utils import get_user_agent, parse_quota_reset_timestamp
 class NonRetryableError(Exception):
     """不可重试的错误，用于 400 等客户端错误，避免外层 except 继续重试"""
     pass
+
+
+def _compute_429_retry_delay(
+    *,
+    attempt: int,
+    base_delay: float,
+    cooldown_until: float | None = None,
+    max_delay: float = 10.0,
+    jitter_ratio: float = 0.2,
+) -> float:
+    """
+    429 重试延迟：指数退避 + 抖动（并可参考 quota cooldown，但不做长等待）。
+    """
+    attempt = max(0, int(attempt))
+    base_delay = float(base_delay)
+    max_delay = float(max_delay)
+
+    delay = min(max_delay, base_delay * (2 ** attempt))
+
+    if cooldown_until:
+        remaining = float(cooldown_until) - time.time()
+        if remaining > 0:
+            delay = max(delay, min(remaining, max_delay))
+
+    if jitter_ratio and jitter_ratio > 0:
+        jitter_ratio = float(jitter_ratio)
+        delay *= random.uniform(1.0 - jitter_ratio, 1.0 + jitter_ratio)
+
+    return max(0.0, delay)
 
 
 def _filter_thoughts_from_response(response_data: dict) -> dict:
@@ -103,78 +134,7 @@ async def _handle_auto_ban(
         await credential_manager.set_cred_disabled(credential_name, True)
 
 
-def _clean_tools_for_gemini(tools):
-    """
-    清理工具定义，移除 Gemini API 不支持的 JSON Schema 字段
-    
-    Gemini API 只支持有限的 OpenAPI 3.0 Schema 属性：
-    - 支持: type, description, enum, items, properties, required, nullable, format
-    - 不支持: $schema, $id, $ref, $defs, title, examples, default, readOnly,
-              exclusiveMaximum, exclusiveMinimum, oneOf, anyOf, allOf, const 等
-    
-    参考: github.com/googleapis/python-genai/issues/699, #388, #460, #1122, #264, #4551
-    """
-    if not tools:
-        return tools
-    
-    # Gemini 不支持的字段列表
-    # 注意：title 在某些情况下是必需的，所以不移除
-    UNSUPPORTED_KEYS = {
-        '$schema', '$id', '$ref', '$defs', 'definitions',
-        'example', 'examples', 'readOnly', 'writeOnly', 'default',
-        'exclusiveMaximum', 'exclusiveMinimum',
-        'oneOf', 'anyOf', 'allOf', 'const',
-        'additionalItems', 'contains', 'patternProperties', 'dependencies',
-        'propertyNames', 'if', 'then', 'else',
-        'contentEncoding', 'contentMediaType',
-        'additionalProperties', 'minLength', 'maxLength',
-        'minItems', 'maxItems', 'uniqueItems'
-    }
-    
-    def clean_schema(obj):
-        """递归清理 schema 对象"""
-        if isinstance(obj, dict):
-            cleaned = {}
-            for key, value in obj.items():
-                if key in UNSUPPORTED_KEYS:
-                    continue
-                cleaned[key] = clean_schema(value)
-            # 确保有 type 字段（如果有 properties 但没有 type）
-            if "properties" in cleaned and "type" not in cleaned:
-                cleaned["type"] = "object"
-            return cleaned
-        elif isinstance(obj, list):
-            return [clean_schema(item) for item in obj]
-        else:
-            return obj
-    
-    # 清理每个工具的参数
-    cleaned_tools = []
-    for tool in tools:
-        if not isinstance(tool, dict):
-            cleaned_tools.append(tool)
-            continue
-            
-        cleaned_tool = tool.copy()
-        
-        # 清理 functionDeclarations
-        if "functionDeclarations" in cleaned_tool:
-            cleaned_declarations = []
-            for func_decl in cleaned_tool["functionDeclarations"]:
-                if not isinstance(func_decl, dict):
-                    cleaned_declarations.append(func_decl)
-                    continue
-                    
-                cleaned_decl = func_decl.copy()
-                if "parameters" in cleaned_decl:
-                    cleaned_decl["parameters"] = clean_schema(cleaned_decl["parameters"])
-                cleaned_declarations.append(cleaned_decl)
-            
-            cleaned_tool["functionDeclarations"] = cleaned_declarations
-        
-        cleaned_tools.append(cleaned_tool)
-    
-    return cleaned_tools
+
 
 
 async def _handle_error_with_retry(
@@ -218,7 +178,8 @@ async def _handle_error_with_retry(
         log.warning(
             f"[RETRY] 429 error encountered, retrying ({attempt + 1}/{max_retries})"
         )
-        await asyncio.sleep(retry_interval)
+        delay = _compute_429_retry_delay(attempt=attempt, base_delay=retry_interval)
+        await asyncio.sleep(delay)
         return True
 
     # 其他错误不进行重试
@@ -432,7 +393,12 @@ async def send_gemini_request(
                                 credential_switch_count += 1
                                 current_cred_result = None  # 强制获取新凭证
                                 log.warning(f"[GCLI] 429 限流，切换凭证重试 ({credential_switch_count}/{max_credential_switches})")
-                                await asyncio.sleep(retry_interval)
+                                delay = _compute_429_retry_delay(
+                                    attempt=credential_switch_count - 1,
+                                    base_delay=retry_interval,
+                                    cooldown_until=cooldown_until,
+                                )
+                                await asyncio.sleep(delay)
                                 continue
                             else:
                                 log.warning(f"[GCLI] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，不再重试")
@@ -548,7 +514,12 @@ async def send_gemini_request(
                             credential_switch_count += 1
                             current_cred_result = None  # 强制获取新凭证
                             log.warning(f"[GCLI] 429 限流，切换凭证重试 ({credential_switch_count}/{max_credential_switches})")
-                            await asyncio.sleep(retry_interval)
+                            delay = _compute_429_retry_delay(
+                                attempt=credential_switch_count - 1,
+                                base_delay=retry_interval,
+                                cooldown_until=cooldown_until,
+                            )
+                            await asyncio.sleep(delay)
                             continue
                         else:
                             log.warning(f"[GCLI] 429 限流，已达到最大凭证切换次数 ({max_credential_switches})，不再重试")
@@ -889,9 +860,9 @@ def build_gemini_payload_from_native(native_request: dict, model_from_path: str)
         if "includeThoughts" not in thinking_config:
             thinking_config["includeThoughts"] = should_include_thoughts(model_from_path)
 
-    # 清理工具定义中不支持的 JSON Schema 字段
-    if "tools" in request_data and request_data["tools"]:
-        request_data["tools"] = _clean_tools_for_gemini(request_data["tools"])
+    # [Fix 2026-01-12] 移除 _clean_tools_for_gemini 调用，避免 Gemini MCP 无限递归问题
+    # if "tools" in request_data and request_data["tools"]:
+    #     request_data["tools"] = _clean_tools_for_gemini(request_data["tools"])
 
     # 为搜索模型添加Google Search工具（如果未指定且没有functionDeclarations）
     if is_search_model(model_from_path):

@@ -109,8 +109,21 @@ async def openai_request_to_gemini_payload(
                         if isinstance(tool_call.function.arguments, str)
                         else tool_call.function.arguments
                     )
+                    
+                    # [Backport from Antigravity] Map local_shell_call -> shell
+                    func_name = tool_call.function.name
+                    if func_name == "local_shell_call":
+                        func_name = "shell"
+                        # [Backport] Ensure command is a list for Gemini compatibility
+                        if "command" in args and isinstance(args["command"], str):
+                             args["command"] = [args["command"]]
+
+                    # [Backport] Map web_search_call -> google_search
+                    if func_name == "web_search_call":
+                        func_name = "google_search"
+
                     parts.append({
-                        "functionCall": {"name": tool_call.function.name, "args": args},
+                        "functionCall": {"name": func_name, "args": args},
                         # Gemini 3 要求 functionCall 必须包含 thoughtSignature
                         "thoughtSignature": "skip_thought_signature_validator",
                     })
@@ -691,6 +704,14 @@ def _normalize_function_name(name: str) -> str:
     if len(normalized) > 64:
         normalized = normalized[:64]
 
+    # [Backport from Antigravity] 特殊处理 local_shell_call
+    if name == "local_shell_call":
+        return "shell"
+    
+    # [Backport] 特殊处理 web_search_call
+    if name == "web_search_call":
+        return "google_search"
+
     return normalized
 
 
@@ -742,8 +763,27 @@ def _clean_schema_for_gemini(schema: Any) -> Any:
         "then",
         "else",
         "contentEncoding",
+        "contentEncoding",
         "contentMediaType",
     }
+
+    # [Backport from Antigravity] 提取 anyOf/oneOf 中的类型 (Type Extraction)
+    # Gemini 不支持 anyOf，但我们需要保留类型信息
+    if "type" not in schema:
+        extracted_type = None
+        if "anyOf" in schema and isinstance(schema["anyOf"], list):
+            for sub in schema["anyOf"]:
+                if isinstance(sub, dict) and "type" in sub and sub["type"] != "null":
+                    extracted_type = sub["type"]
+                    break
+        elif "oneOf" in schema and isinstance(schema["oneOf"], list):
+             for sub in schema["oneOf"]:
+                if isinstance(sub, dict) and "type" in sub and sub["type"] != "null":
+                    extracted_type = sub["type"]
+                    break
+        
+        if extracted_type:
+             schema["type"] = extracted_type
 
     cleaned = {}
     for key, value in schema.items():
@@ -761,6 +801,18 @@ def _clean_schema_for_gemini(schema: Any) -> Any:
     # 确保有 type 字段（如果有 properties 但没有 type）
     if "properties" in cleaned and "type" not in cleaned:
         cleaned["type"] = "object"
+        
+    # [Backport from Antigravity] 强制 type 为小写
+    if "type" in cleaned and isinstance(cleaned["type"], str):
+        cleaned["type"] = cleaned["type"].lower()
+    # Handle array of types (e.g. ["string", "null"]) -> "string"
+    if "type" in cleaned and isinstance(cleaned["type"], list):
+        selected_type = "string"
+        for t in cleaned["type"]:
+            if t != "null":
+                selected_type = t
+                break
+        cleaned["type"] = selected_type.lower()
 
     return cleaned
 
@@ -930,6 +982,14 @@ def convert_tool_message_to_function_response(message, all_messages: List = None
     return {"functionResponse": {"name": name, "response": response_data}}
 
 
+def generate_tool_call_id(name: str, args: dict) -> str:
+    """生成确定性的工具调用 ID (基于哈希)"""
+    import hashlib
+    unique_string = f"{name}{json.dumps(args, sort_keys=True)}"
+    hash_object = hashlib.md5(unique_string.encode())
+    return f"call_{hash_object.hexdigest()[:24]}"
+
+
 def extract_tool_calls_from_parts(
     parts: List[Dict[str, Any]], is_streaming: bool = False
 ) -> Tuple[List[Dict[str, Any]], str]:
@@ -950,8 +1010,11 @@ def extract_tool_calls_from_parts(
         # 检查是否是函数调用
         if "functionCall" in part:
             function_call = part["functionCall"]
+            # [Fix] 使用哈希生成确定性 ID
+            call_id = generate_tool_call_id(function_call.get("name"), function_call.get("args", {}))
+            
             tool_call = {
-                "id": f"call_{uuid.uuid4().hex[:24]}",
+                "id": call_id,
                 "type": "function",
                 "function": {
                     "name": function_call.get("name"),

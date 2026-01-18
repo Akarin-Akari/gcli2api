@@ -3,6 +3,10 @@ Main Web Integration - Integrates all routers and modules
 集合router并开启主服务
 """
 
+# 加载 .env 文件中的环境变量（必须在其他导入之前）
+from dotenv import load_dotenv
+load_dotenv()  # 加载 .env 文件
+
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -12,6 +16,9 @@ from fastapi.staticfiles import StaticFiles
 
 from config import get_server_host, get_server_port
 from log import log
+
+# Import IDE compatibility middleware
+from src.ide_compat import IDECompatMiddleware
 
 # Import managers and utilities
 from src.credential_manager import CredentialManager
@@ -23,7 +30,7 @@ from src.antigravity_anthropic_router import router as antigravity_anthropic_rou
 from src.openai_router import router as openai_router
 from src.task_manager import shutdown_all_tasks
 from src.web_routes import router as web_router
-from src.unified_gateway_router import router as gateway_router
+from src.unified_gateway_router import router as gateway_router, augment_router
 
 # 全局凭证管理器
 global_credential_manager = None
@@ -52,6 +59,33 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"凭证管理器初始化失败: {e}")
         global_credential_manager = None
+
+    # ================================================================
+    # [PHASE 2 DUAL_WRITE] 启用缓存双写模式 - 生产测试
+    # 作者: Claude Opus 4 (浮浮酱)
+    # 日期: 2026-01-10
+    # 说明: 启用双写策略，同时写入旧缓存和新的分层缓存系统
+    #       用于验证新缓存系统的正确性，不影响现有功能
+    # 
+    # 如需禁用，请注释以下代码块
+    # ================================================================
+    try:
+        from src.signature_cache import (
+            enable_migration_mode,
+            set_migration_phase,
+            get_migration_status
+        )
+        # 启用迁移模式
+        enable_migration_mode()
+        # 设置为 DUAL_WRITE 阶段（双写模式）
+        set_migration_phase("DUAL_WRITE")
+        status = get_migration_status()
+        log.info(f"[PHASE 2] 缓存双写模式已启用: {status}")
+    except Exception as e:
+        log.warning(f"[PHASE 2] 缓存双写模式启用失败（非致命）: {e}")
+    # ================================================================
+    # [END PHASE 2 DUAL_WRITE]
+    # ================================================================
 
     # OAuth回调服务器将在需要时按需启动
 
@@ -95,6 +129,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ================================================================
+# [IDE COMPAT] IDE 兼容中间件 - 处理 IDE 客户端的特殊行为
+# 作者: Claude Opus 4.5 (浮浮酱)
+# 日期: 2026-01-17
+# 说明: 在 CORS 之后、路由之前添加 IDE 兼容中间件
+#       - 检测客户端类型 (Claude Code / Cursor / Augment 等)
+#       - 对 IDE 客户端的消息进行净化 (处理无效签名等)
+#       - 维护会话状态 (SCID 状态机)
+# ================================================================
+try:
+    app.add_middleware(IDECompatMiddleware)
+    log.info("[STARTUP] IDE 兼容中间件已启用")
+except Exception as e:
+    log.warning(f"[STARTUP] IDE 兼容中间件启用失败（非致命）: {e}")
+# ================================================================
+# [END IDE COMPAT]
+# ================================================================
+
 # 挂载路由器
 # OpenAI兼容路由 - 处理OpenAI格式请求
 app.include_router(openai_router, prefix="", tags=["OpenAI Compatible API"])
@@ -113,6 +165,9 @@ app.include_router(web_router, prefix="", tags=["Web Interface"])
 
 # 统一网关路由 - 整合多后端服务，支持优先级路由和故障转移
 app.include_router(gateway_router, prefix="", tags=["Unified Gateway"])
+
+# Augment Code 兼容路由 - 处理不带 /gateway 前缀的请求
+app.include_router(augment_router, prefix="", tags=["Augment Code Compatibility"])
 
 # 静态文件路由 - 服务docs目录下的文件（如捐赠图片）
 app.mount("/docs", StaticFiles(directory="docs"), name="docs")
@@ -161,7 +216,11 @@ async def main():
     log.info("=" * 60)
     log.info("统一网关 (自动故障转移):")
     log.info(f"   Gateway API: http://127.0.0.1:{port}/gateway/v1")
-    log.info(f"   优先级: Antigravity > Copilot")
+    log.info(f"   优先级: Antigravity > Copilot > Kiro Gateway")
+    # 检查 Kiro Gateway 配置
+    from src.unified_gateway_router import KIRO_GATEWAY_MODELS
+    if KIRO_GATEWAY_MODELS:
+        log.info(f"   Kiro Gateway 路由模型: {', '.join(KIRO_GATEWAY_MODELS)}")
     log.info("=" * 60)
 
     # 配置hypercorn

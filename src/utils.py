@@ -1,5 +1,7 @@
 import base64
+import re
 import platform
+import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -235,12 +237,25 @@ def get_user_agent():
     return f"GeminiCLI/{version} ({system}; {arch})"
 
 
-def parse_quota_reset_timestamp(error_response: dict) -> Optional[float]:
+def parse_quota_reset_timestamp(
+    error_response: dict,
+    response_headers: Optional[dict] = None,
+    error_message: Optional[str] = None,
+) -> Optional[float]:
     """
     从Google API错误响应中提取quota重置时间戳
 
+    对齐 CLIProxyAPI 的完整解析策略：
+    1. 优先解析 HTTP 响应头 Retry-After
+    2. 解析 Google RPC RetryInfo.retryDelay（标准格式）
+    3. 解析 ErrorInfo.metadata.quotaResetTimeStamp（ISO 时间戳）
+    4. 解析 ErrorInfo.metadata.quotaResetDelay（duration 字符串）
+    5. 从错误消息中正则提取（最后备用）
+
     Args:
         error_response: Google API返回的错误响应字典
+        response_headers: HTTP 响应头（可选，用于解析 Retry-After）
+        error_message: 错误消息文本（可选，用于正则提取）
 
     Returns:
         Unix时间戳（秒），如果无法解析则返回None
@@ -264,14 +279,78 @@ def parse_quota_reset_timestamp(error_response: dict) -> Optional[float]:
       }
     }
     """
+    def _parse_duration_seconds(duration_str: str) -> Optional[float]:
+        """
+        解析 duration 字符串，支持形如：
+        - "1.5s"
+        - "200ms"
+        - "1h16m0.667s"
+        """
+        if not duration_str:
+            return None
+
+        total_ms = 0.0
+        matched = False
+        for value_str, unit in re.findall(r"([\d.]+)\s*(ms|s|m|h)", duration_str):
+            matched = True
+            try:
+                value = float(value_str)
+            except ValueError:
+                return None
+
+            if unit == "ms":
+                total_ms += value
+            elif unit == "s":
+                total_ms += value * 1000.0
+            elif unit == "m":
+                total_ms += value * 60.0 * 1000.0
+            elif unit == "h":
+                total_ms += value * 60.0 * 60.0 * 1000.0
+
+        if not matched:
+            return None
+        return total_ms / 1000.0
+
     try:
-        details = error_response.get("error", {}).get("details", [])
+        # ✅ [FIX 2026-01-17] 方式 0：HTTP 响应头 Retry-After（最高优先级）
+        if response_headers:
+            retry_after = response_headers.get("Retry-After") or response_headers.get("retry-after")
+            if retry_after:
+                try:
+                    # 尝试解析为整数（秒数）
+                    seconds = int(retry_after)
+                    return time.time() + seconds
+                except ValueError:
+                    # 尝试解析为 HTTP-date 格式
+                    try:
+                        from email.utils import parsedate_to_datetime
+                        retry_dt = parsedate_to_datetime(retry_after)
+                        return retry_dt.timestamp()
+                    except Exception:
+                        pass
 
+        details = error_response.get("error", {}).get("details", []) or []
+
+        # 方式 1：google.rpc.RetryInfo.retryDelay
         for detail in details:
-            if detail.get("@type") == "type.googleapis.com/google.rpc.ErrorInfo":
-                reset_timestamp_str = detail.get("metadata", {}).get("quotaResetTimeStamp")
+            if not isinstance(detail, dict):
+                continue
+            type_str = detail.get("@type")
+            if isinstance(type_str, str) and "RetryInfo" in type_str:
+                retry_delay = detail.get("retryDelay")
+                if isinstance(retry_delay, str):
+                    seconds = _parse_duration_seconds(retry_delay)
+                    if seconds is not None:
+                        return time.time() + seconds
 
-                if reset_timestamp_str:
+        # 方式 2：google.rpc.ErrorInfo.metadata.quotaResetTimeStamp（ISO 时间）
+        for detail in details:
+            if not isinstance(detail, dict):
+                continue
+            if detail.get("@type") == "type.googleapis.com/google.rpc.ErrorInfo":
+                reset_timestamp_str = (detail.get("metadata", {}) or {}).get("quotaResetTimeStamp")
+
+                if isinstance(reset_timestamp_str, str) and reset_timestamp_str:
                     if reset_timestamp_str.endswith("Z"):
                         reset_timestamp_str = reset_timestamp_str.replace("Z", "+00:00")
 
@@ -280,6 +359,40 @@ def parse_quota_reset_timestamp(error_response: dict) -> Optional[float]:
                         reset_dt = reset_dt.replace(tzinfo=timezone.utc)
 
                     return reset_dt.astimezone(timezone.utc).timestamp()
+
+        # 方式 3：metadata.quotaResetDelay（duration）
+        for detail in details:
+            if not isinstance(detail, dict):
+                continue
+            quota_delay = (detail.get("metadata", {}) or {}).get("quotaResetDelay")
+            if isinstance(quota_delay, str) and quota_delay:
+                seconds = _parse_duration_seconds(quota_delay)
+                if seconds is not None:
+                    return time.time() + seconds
+
+        # ✅ [FIX 2026-01-17] 方式 4：从错误消息中正则提取（最后备用）
+        if error_message:
+            # 匹配 "Your quota will reset after Xs." 或 "retry after Xs"
+            match = re.search(r"(?:reset|retry)\s+(?:after|in)\s+([\d.]+)\s*s(?:econds?)?", error_message, re.IGNORECASE)
+            if match:
+                try:
+                    seconds = float(match.group(1))
+                    return time.time() + seconds
+                except ValueError:
+                    pass
+
+            # 匹配 "Please try again in Xm" 或 "retry in Xh"
+            match = re.search(r"(?:try again|retry)\s+in\s+([\d.]+)\s*([mh])", error_message, re.IGNORECASE)
+            if match:
+                try:
+                    value = float(match.group(1))
+                    unit = match.group(2).lower()
+                    if unit == "m":
+                        return time.time() + value * 60.0
+                    elif unit == "h":
+                        return time.time() + value * 3600.0
+                except ValueError:
+                    pass
 
         return None
 
@@ -349,6 +462,79 @@ async def authenticate_bearer(
         )
 
     return token
+
+
+def _is_local_request(request: Request) -> bool:
+    host = request.client.host if request.client else ""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+async def authenticate_bearer_allow_local_dummy(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+) -> str:
+    """
+    Bearer Token 认证（兼容本地 Bugment/Augment）。
+
+    背景：部分客户端固定发送 `Authorization: Bearer dummy`，而网关口令可配置，重构后会导致入口直接 403。
+    策略：仅对 localhost 请求放行 dummy token，其它保持原有严格校验。
+    """
+
+    password = await get_api_password()
+
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication scheme. Use 'Bearer <token>'",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = authorization[7:]
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = token.strip()
+
+    if token == password:
+        return token
+
+    if _is_local_request(request):
+        # Some hosts (e.g. Cursor) can end up sending placeholder strings if secret storage fails.
+        # We only tolerate these placeholders for localhost requests.
+        if token in ("dummy", "undefined", "null"):
+            return "dummy"
+        # IDE-integrated clients (VSCode/Cursor) run locally and may provide their own per-host token.
+        # To avoid brittle coupling between the IDE's token storage and the gateway's API_PASSWORD,
+        # accept any non-empty Bearer token for localhost requests coming from the Augment extension UA.
+        user_agent_lower = (request.headers.get("user-agent") or request.headers.get("User-Agent") or "").lower()
+        if "augment.vscode-augment/" in user_agent_lower:
+            return token
+
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent") or request.headers.get("User-Agent") or ""
+    if token in ("dummy", "undefined", "null"):
+        masked = token
+    elif len(token) <= 8:
+        masked = f"{token[:2]}***{token[-2:]}" if len(token) > 3 else "***"
+    else:
+        masked = f"{token[:4]}***{token[-4:]}"
+    log.warning(
+        f"[AUTH] Rejecting bearer token (client_ip={client_ip}, ua={user_agent}, token={masked})",
+        tag="AUTH",
+    )
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="密码错误")
 
 
 async def authenticate_gemini_flexible(

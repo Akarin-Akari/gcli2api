@@ -383,6 +383,11 @@ async def convert_streaming_response(gemini_response, model: str) -> StreamingRe
 
     async def openai_stream_generator():
         try:
+            # [SSOP] 初始化 SSOP 扫描器
+            from .ssop import SSOPScanner
+            ssop_scanner = SSOPScanner()
+            has_emitted_native_tool = False
+            
             # 处理不同类型的响应对象
             if hasattr(gemini_response, "body_iterator"):
                 # FastAPI StreamingResponse
@@ -402,9 +407,46 @@ async def convert_streaming_response(gemini_response, model: str) -> StreamingRe
                         payload = chunk_str[len("data: ") :].encode()
                     try:
                         gemini_chunk = json.loads(payload.decode())
+                        
+                        # [SSOP] 扫描文本内容以进行提前工具调用
+                        if not has_emitted_native_tool:
+                            # 尝试从 Gemini chunk 中提取文本 (如果有)
+                            # 注意: gemini_stream_chunk_to_openai 内部会处理结构，但我们需要原始文本给 SSOP
+                            # 这里简化处理：我们只查看 candidates[0].content.parts.text
+                            candidates = gemini_chunk.get("candidates", [])
+                            if candidates:
+                                parts = candidates[0].get("content", {}).get("parts", [])
+                                for part in parts:
+                                    if "text" in part:
+                                        text = part["text"]
+                                        synthetic_tool = ssop_scanner.scan(text)
+                                        if synthetic_tool:
+                                            # 发送合成工具调用！
+                                            log.info(f"[SSOP] Emitting synthetic tool call: {synthetic_tool['id']}")
+                                            ssop_chunk = {
+                                                "id": response_id,
+                                                "object": "chat.completion.chunk",
+                                                "created": int(time.time()),
+                                                "model": model,
+                                                "choices": [{
+                                                    "index": 0,
+                                                    "delta": {
+                                                        "role": "assistant",
+                                                        "tool_calls": [synthetic_tool]
+                                                    },
+                                                    "finish_reason": None
+                                                }]
+                                            }
+                                            yield f"data: {json.dumps(ssop_chunk)}\n\n".encode()
+
                         openai_chunk = gemini_stream_chunk_to_openai(
                             gemini_chunk, model, response_id
                         )
+                        
+                        #Check if this chunk contains a native tool call to disable SSOP
+                        if openai_chunk.get("choices", [{}])[0].get("delta", {}).get("tool_calls"):
+                             has_emitted_native_tool = True
+                             
                         yield f"data: {json.dumps(openai_chunk, separators=(',', ':'))}\n\n".encode()
                     except json.JSONDecodeError:
                         continue

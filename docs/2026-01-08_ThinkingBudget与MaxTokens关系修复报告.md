@@ -136,8 +136,77 @@ if isinstance(max_tokens, int) and max_tokens < MIN_MAX_TOKENS:
 2. **Cursor 不写文件直接在 chat 输出** - 可能因 MAX_TOKENS 导致工具调用不完整
 3. **孤儿 tool_result 问题** - 已在之前的修复中处理
 
-## 后续建议
+---
 
-1. **观察日志**：检查 max_tokens 自动提升是否正常工作
-2. **监控 MAX_TOKENS**：观察修复后是否还有 MAX_TOKENS 截断
-3. **考虑上限**：如果 thinkingBudget 过大，可能需要设置 max_tokens 上限
+## [FIX 2026-01-09] 双向限制策略
+
+### 问题发现
+
+原有修复存在问题：当 `thinkingBudget` 很大（如 31999）时，`max_tokens` 会被提升到非常高的值（如 48383），这**会触发后端 429 错误**。
+
+### 解决方案：双向限制
+
+核心思路：既要保证足够的输出空间，又不能让 `max_tokens` 过大触发 429。
+
+**策略**：
+```
+如果 thinkingBudget + MIN_OUTPUT_TOKENS > MAX_ALLOWED_TOKENS:
+    1. 先下调 thinkingBudget = MAX_ALLOWED_TOKENS - MIN_OUTPUT_TOKENS
+    2. max_tokens 设置为 MIN(budget + MIN_OUTPUT_TOKENS, MAX_ALLOWED_TOKENS)
+```
+
+**参数配置**：
+
+| 参数 | 值 | 说明 |
+|------|------|------|
+| `MIN_OUTPUT_TOKENS` | 4096 | 实际输出的最小保障空间 |
+| `MAX_ALLOWED_TOKENS` | 32000 | max_tokens 的绝对上限（防止 429） |
+
+### 计算示例
+
+**示例1**：当 `thinkingBudget=31999`, 客户端 `max_tokens=4096` 时：
+
+| 步骤 | 计算 | 结果 |
+|------|------|------|
+| 1. 检查总需求 | `31999 + 4096 = 36095` | > 32000 ❌ |
+| 2. 下调 thinkingBudget | `32000 - 4096 = 27904` | ✅ |
+| 3. 计算 max_tokens | `MIN(27904 + 4096, 32000) = 32000` | ✅ |
+| **最终结果** | `max_tokens=32000, thinkingBudget=27904` | 输出空间=4096 ✅ |
+
+**示例2**：当 `thinkingBudget=8192`, 客户端 `max_tokens=4096` 时：
+
+| 步骤 | 计算 | 结果 |
+|------|------|------|
+| 1. 检查总需求 | `8192 + 4096 = 12288` | < 32000 ✅ |
+| 2. 保持 thinkingBudget | 不变 | 8192 |
+| 3. 计算 max_tokens | `MIN(8192 + 4096, 32000) = 12288` | ✅ |
+| **最终结果** | `max_tokens=12288, thinkingBudget=8192` | 输出空间=4096 ✅ |
+
+### 修改文件
+
+**文件**: `gcli2api/src/anthropic_converter.py`
+
+**新增常量**（第 11-14 行）：
+```python
+# [FIX 2026-01-09] 双向限制策略常量定义
+MAX_ALLOWED_TOKENS = 32000   # max_tokens 的绝对上限（防止 429 错误）
+MIN_OUTPUT_TOKENS = 4096     # 实际输出的最小保障空间
+```
+
+**修改逻辑**（第 781-837 行）：完整重写 thinking budget 调整逻辑
+
+### 日志示例
+
+修复后的日志：
+
+```
+[ANTHROPIC][thinking] 双向限制生效：thinkingBudget 下调 31999 -> 27904 (MAX_ALLOWED=32000, MIN_OUTPUT=4096)
+[ANTHROPIC][thinking] 双向限制生效：maxOutputTokens 提升 4096 -> 32000 (thinkingBudget=27904, 实际输出空间=4096)
+```
+
+### 预期效果
+
+- ✅ 保证至少 4096 tokens 的输出空间
+- ✅ 防止 max_tokens 超过 32000 导致 429 错误
+- ✅ 自动调整 thinkingBudget 和 max_tokens 的关系
+- ✅ 详细的日志记录调整过程

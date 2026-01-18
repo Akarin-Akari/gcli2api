@@ -301,25 +301,91 @@ class SQLiteManager:
                 """) as cursor:
                     rows = await cursor.fetchall()
 
+                    # [DEBUG 2026-01-17] 添加调试日志
+                    log.debug(f"[SQLite] get_next_available_credential: is_antigravity={is_antigravity}, model_key={model_key}, found {len(rows)} credentials")
+
                     # 如果没有提供 model_key，使用第一个可用凭证
                     if not model_key:
                         if rows:
                             filename, credential_json, _ = rows[0]
                             credential_data = json.loads(credential_json)
+                            log.debug(f"[SQLite] Returning credential without model_key check: {filename}")
                             return filename, credential_data
+                        log.warning(f"[SQLite] No credentials found (model_key=None)")
                         return None
 
-                    # 如果提供了 model_key，检查模型级冷却
+                    # [FIX 2026-01-17] 如果提供了 model_key，检查配额百分比而不是冷却时间
+                    # 修复原因：采用 Antigravity-Manager 的正确逻辑
+                    # - 冷却时间不应影响凭证可用性（仅用于统计和日志）
+                    # - 只有配额不足（<20%）时才应标记为不可用
+                    # - 预热机制可以正常工作（冷却期间仍可使用）
+                    # - 使用内存缓存获取配额信息（不修改数据库结构）
+                    QUOTA_THRESHOLD = 20  # 配额阈值：20%
+
+                    # 导入 fetch_quota_info（使用内存缓存）
+                    from ..antigravity_api import fetch_quota_info
+
                     for filename, credential_json, model_cooldowns_json in rows:
+                        credential_data = json.loads(credential_json)
                         model_cooldowns = json.loads(model_cooldowns_json or '{}')
 
-                        # 检查该模型是否在冷却中
-                        model_cooldown = model_cooldowns.get(model_key)
-                        if model_cooldown is None or current_time >= model_cooldown:
-                            # 该模型未冷却或冷却已过期
-                            credential_data = json.loads(credential_json)
+                        # 检查该模型的配额百分比（而不是冷却时间）
+                        model_available = False
+                        model_percentage = None
+
+                        # 仅对 antigravity 凭证检查配额
+                        if is_antigravity:
+                            try:
+                                # 获取 access_token
+                                access_token = credential_data.get("access_token") or credential_data.get("token")
+                                if access_token:
+                                    # 调用 fetch_quota_info（会自动使用内存缓存）
+                                    quota_result = await fetch_quota_info(access_token, cache_key=filename)
+
+                                    if quota_result.get("success"):
+                                        models = quota_result.get("models", {})
+
+                                        # 在配额信息中查找目标模型
+                                        for model_id, model_data in models.items():
+                                            # 支持前缀匹配
+                                            if model_id.lower().startswith(model_key.lower()) or model_key.lower().startswith(model_id.lower()):
+                                                remaining_fraction = model_data.get("remaining", 0)
+                                                model_percentage = remaining_fraction * 100  # 转换为百分比
+
+                                                # 配额阈值：20%（低于此值换号，避免被谷歌盯上）
+                                                if model_percentage >= QUOTA_THRESHOLD:
+                                                    model_available = True
+                                                    log.debug(f"[SQLite] ✓ {filename}: model={model_id}, quota={model_percentage:.1f}% >= {QUOTA_THRESHOLD}%, available")
+                                                else:
+                                                    log.debug(f"[SQLite] ✗ {filename}: model={model_id}, quota={model_percentage:.1f}% < {QUOTA_THRESHOLD}%, unavailable (换号)")
+                                                break
+                                    else:
+                                        # 获取配额失败，默认可用（避免误判）
+                                        log.debug(f"[SQLite] ⚠ {filename}: Failed to fetch quota, assuming available")
+                                        model_available = True
+                                else:
+                                    # 没有 access_token，默认可用
+                                    log.debug(f"[SQLite] ⚠ {filename}: No access_token, assuming available")
+                                    model_available = True
+                            except Exception as e:
+                                # 异常情况，默认可用（避免误判）
+                                log.warning(f"[SQLite] ⚠ {filename}: Exception while checking quota: {e}, assuming available")
+                                model_available = True
+                        else:
+                            # 非 antigravity 凭证，默认可用（不检查配额）
+                            model_available = True
+
+                        # 如果模型可用，返回凭证
+                        if model_available:
+                            # 记录冷却信息（仅用于日志，不影响可用性判定）
+                            model_cooldown = model_cooldowns.get(model_key)
+                            if model_cooldown and current_time < model_cooldown:
+                                remaining = model_cooldown - current_time
+                                log.debug(f"[SQLite] ℹ {filename}: model_key={model_key} is cooling ({remaining:.1f}s remaining), but still available due to sufficient quota")
+
                             return filename, credential_data
 
+                    log.warning(f"[SQLite] All {len(rows)} credentials have insufficient quota (<{QUOTA_THRESHOLD}%) for model_key={model_key}")
                     return None
 
         except Exception as e:

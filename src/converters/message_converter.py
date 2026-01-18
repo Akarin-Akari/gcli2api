@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 
 from log import log
 from src.signature_cache import get_cached_signature
+# [FIX 2026-01-11] 导入 gemini_fix 的清理函数
+from .gemini_fix import clean_contents, ALLOWED_PART_KEYS
 
 
 def extract_images_from_content(content: Any) -> Dict[str, Any]:
@@ -336,6 +338,16 @@ def openai_messages_to_antigravity_contents(
 
         # 处理 assistant 消息
         elif role == "assistant":
+            # [DEBUG] 打印 assistant 消息的详细信息
+            content_type = type(content).__name__
+            content_len = len(str(content)) if content else 0
+            log.info(f"[MESSAGE_CONVERTER DEBUG] Processing assistant message: content_type={content_type}, content_len={content_len}")
+            if isinstance(content, str) and content:
+                has_think_tag = "<think>" in content.lower() or "</think>" in content.lower()
+                log.info(f"[MESSAGE_CONVERTER DEBUG] String content has_think_tag={has_think_tag}, first_100_chars='{content[:100]}...'")
+            elif isinstance(content, list):
+                log.info(f"[MESSAGE_CONVERTER DEBUG] List content with {len(content)} items, item_types={[type(i).__name__ for i in content[:3]]}")
+            
             # 处理 content：可能是字符串或数组
             content_parts = []
             if content:
@@ -349,16 +361,44 @@ def openai_messages_to_antigravity_contents(
                     if thinking_match:
                         # 提取 thinking 内容
                         thinking_text = thinking_match.group(0)
+                        log.info(f"[MESSAGE_CONVERTER DEBUG] Found thinking_match: match_len={len(thinking_text)}")
                         # 移除标签，保留内容
                         thinking_content = re.sub(r'</?(?:redacted_)?reasoning>', '', thinking_text, flags=re.IGNORECASE)
                         thinking_content = re.sub(r'</?think>', '', thinking_content, flags=re.IGNORECASE)
-                        # 注意：Claude API 要求 thoughtSignature 必须是有效的非空字符串
-                        # 从字符串格式的 content 中无法提取 signature，因此不添加 thinking block
-                        log.debug(f"[ANTIGRAVITY] Found thinking tag in string content, but no signature available. Removing thinking content.")
-                        # 移除 thinking 标签后的剩余内容
-                        content = re.sub(r'<(?:redacted_)?reasoning>.*?</(?:redacted_)?reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
-                        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE)
-                        content = content.strip()
+                        thinking_content = thinking_content.strip()
+                        log.info(f"[MESSAGE_CONVERTER DEBUG] Extracted thinking_content: len={len(thinking_content)}, first_50='{thinking_content[:50]}...'")
+                        
+                        # [FIX 2026-01-09] 尝试从缓存恢复 signature
+                        # 这是多轮对话中保持 thinking 模式的关键！
+                        cached_signature = None
+                        if thinking_content:
+                            log.info(f"[SIGNATURE_CACHE DEBUG] Querying cache for thinking_content: len={len(thinking_content)}")
+                            cached_signature = get_cached_signature(thinking_content)
+                            log.info(f"[SIGNATURE_CACHE DEBUG] Cache query result: cached_signature={'found' if cached_signature else 'NOT FOUND'}")
+                        
+                        if cached_signature:
+                            # 缓存命中！添加 thinking block
+                            content_parts.append({
+                                "text": str(thinking_content),
+                                "thought": True,
+                                "thoughtSignature": cached_signature
+                            })
+                            log.info(f"[SIGNATURE_CACHE] 从缓存恢复 signature（字符串格式 <think> 标签）: thinking_len={len(thinking_content)}")
+                            # 移除 thinking 标签后的剩余内容作为普通文本
+                            remaining_content = re.sub(r'<(?:redacted_)?reasoning>.*?</(?:redacted_)?reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
+                            remaining_content = re.sub(r'<think>.*?</think>', '', remaining_content, flags=re.DOTALL | re.IGNORECASE)
+                            remaining_content = remaining_content.strip()
+                            if remaining_content:
+                                content_parts.append({"text": remaining_content})
+                            # 跳过后续的 extracted 处理，因为我们已经处理了 content
+                            content = ""
+                        else:
+                            # 缓存未命中，移除 thinking 内容
+                            log.warning(f"[SIGNATURE_CACHE] 字符串格式 <think> 标签缓存未命中，移除 thinking 内容: thinking_len={len(thinking_content)}")
+                            # 移除 thinking 标签后的剩余内容
+                            content = re.sub(r'<(?:redacted_)?reasoning>.*?</(?:redacted_)?reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
+                            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE)
+                            content = content.strip()
 
                     extracted = extract_images_from_content(content)
                     if extracted["text"]:
@@ -372,57 +412,57 @@ def openai_messages_to_antigravity_contents(
                             if item_type == "thinking":
                                 # 提取 thinking 内容
                                 thinking_text = item.get("thinking", "")
-                                signature = item.get("signature", "")
-                                # 只有当 signature 有效时才添加 thinking block
-                                if signature and signature.strip():
-                                    content_parts.append({
-                                        "text": str(thinking_text),
-                                        "thought": True,
-                                        "thoughtSignature": signature
-                                    })
-                                else:
-                                    # signature 无效，尝试从缓存恢复
-                                    if thinking_text:
-                                        cached_signature = get_cached_signature(thinking_text)
-                                        if cached_signature:
-                                            content_parts.append({
-                                                "text": str(thinking_text),
-                                                "thought": True,
-                                                "thoughtSignature": cached_signature
-                                            })
-                                            log.info(f"[SIGNATURE_CACHE] 从缓存恢复 signature: thinking_len={len(thinking_text)}")
+                                message_signature = item.get("signature", "")
+
+                                # [FIX 2026-01-09] 始终优先使用缓存验证 signature
+                                # 问题：重新打开对话时，Cursor 发送的历史消息包含旧 signature
+                                # 这些 signature 可能来自前一次服务器会话，在当前缓存中不存在
+                                # 直接使用消息提供的 signature 会导致 Claude API 返回 400 错误
+                                # 解决方案：始终从缓存查找 signature，不信任消息提供的 signature
+                                if thinking_text:
+                                    cached_signature = get_cached_signature(thinking_text)
+                                    if cached_signature:
+                                        content_parts.append({
+                                            "text": str(thinking_text),
+                                            "thought": True,
+                                            "thoughtSignature": cached_signature
+                                        })
+                                        if message_signature and message_signature != cached_signature:
+                                            log.info(f"[SIGNATURE_CACHE] 使用缓存 signature 替代消息 signature: thinking_len={len(thinking_text)}")
                                         else:
-                                            # [FIX] 缓存未命中时，跳过 thinking block 而不是转换为普通文本
-                                            # 将 thinking 转换为普通文本会导致 assistant 消息不以 thinking block 开头
-                                            # 这会触发 400 错误：Expected 'thinking' or 'redacted_thinking', but found 'text'
-                                            log.warning(f"[SIGNATURE_CACHE] Thinking block 缓存未命中，跳过此 block 以避免 400 错误: thinking_len={len(thinking_text)}")
+                                            log.debug(f"[SIGNATURE_CACHE] 使用缓存 signature: thinking_len={len(thinking_text)}")
+                                    else:
+                                        # [FIX] 缓存未命中时，跳过 thinking block 而不是转换为普通文本
+                                        # 将 thinking 转换为普通文本会导致 assistant 消息不以 thinking block 开头
+                                        # 这会触发 400 错误：Expected 'thinking' or 'redacted_thinking', but found 'text'
+                                        log.warning(f"[SIGNATURE_CACHE] Thinking block 缓存未命中，跳过此 block 以避免 400 错误: thinking_len={len(thinking_text)}, has_msg_sig={bool(message_signature)}")
                             elif item_type == "redacted_thinking":
                                 # 提取 redacted_thinking 内容
                                 thinking_text = item.get("thinking") or item.get("data", "")
-                                signature = item.get("signature", "")
-                                # 只有当 signature 有效时才添加 thinking block
-                                if signature and signature.strip():
-                                    content_parts.append({
-                                        "text": str(thinking_text),
-                                        "thought": True,
-                                        "thoughtSignature": signature
-                                    })
-                                else:
-                                    # signature 无效，尝试从缓存恢复
-                                    if thinking_text:
-                                        cached_signature = get_cached_signature(thinking_text)
-                                        if cached_signature:
-                                            content_parts.append({
-                                                "text": str(thinking_text),
-                                                "thought": True,
-                                                "thoughtSignature": cached_signature
-                                            })
-                                            log.info(f"[SIGNATURE_CACHE] 从缓存恢复 redacted signature: thinking_len={len(thinking_text)}")
+                                message_signature = item.get("signature", "")
+
+                                # [FIX 2026-01-09] 始终优先使用缓存验证 signature
+                                # 问题：重新打开对话时，Cursor 发送的历史消息包含旧 signature
+                                # 这些 signature 可能来自前一次服务器会话，在当前缓存中不存在
+                                # 直接使用消息提供的 signature 会导致 Claude API 返回 400 错误
+                                # 解决方案：始终从缓存查找 signature，不信任消息提供的 signature
+                                if thinking_text:
+                                    cached_signature = get_cached_signature(thinking_text)
+                                    if cached_signature:
+                                        content_parts.append({
+                                            "text": str(thinking_text),
+                                            "thought": True,
+                                            "thoughtSignature": cached_signature
+                                        })
+                                        if message_signature and message_signature != cached_signature:
+                                            log.info(f"[SIGNATURE_CACHE] 使用缓存 signature 替代消息 redacted signature: thinking_len={len(thinking_text)}")
                                         else:
-                                            # [FIX] 缓存未命中时，跳过 redacted_thinking block 而不是转换为普通文本
-                                            # 将 thinking 转换为普通文本会导致 assistant 消息不以 thinking block 开头
-                                            # 这会触发 400 错误：Expected 'thinking' or 'redacted_thinking', but found 'text'
-                                            log.warning(f"[SIGNATURE_CACHE] Redacted thinking block 缓存未命中，跳过此 block 以避免 400 错误: thinking_len={len(thinking_text)}")
+                                            log.debug(f"[SIGNATURE_CACHE] 使用缓存 redacted signature: thinking_len={len(thinking_text)}")
+                                    else:
+                                        # [FIX] 缓存未命中时，跳过 redacted_thinking block 而不是转换为普通文本
+                                        # 将 thinking 转换为普通文本会导致 assistant 消息不以 thinking block 开头
+                                        # 这会触发 400 错误：Expected 'thinking' or 'redacted_thinking', but found 'text'
+                                        log.warning(f"[SIGNATURE_CACHE] Redacted thinking block 缓存未命中，跳过此 block 以避免 400 错误: thinking_len={len(thinking_text)}, has_msg_sig={bool(message_signature)}")
                             elif item_type == "text":
                                 content_parts.append({"text": item.get("text", "")})
                             elif item_type == "image_url":
@@ -533,6 +573,10 @@ def openai_messages_to_antigravity_contents(
             }]
             contents.append({"role": "user", "parts": parts})
 
+    # [FIX 2026-01-11] 应用 ALLOWED_PART_KEYS 白名单过滤和尾随空格清理
+    # 这是上游同步的关键修复，防止 cache_control 等不支持字段导致 400/429 错误
+    contents = clean_contents(contents)
+    
     return contents
 
 
@@ -552,4 +596,7 @@ def gemini_contents_to_antigravity_contents(gemini_contents: List[Dict[str, Any]
             "parts": parts
         })
 
+    # [FIX 2026-01-11] 应用 ALLOWED_PART_KEYS 白名单过滤和尾随空格清理
+    contents = clean_contents(contents)
+    
     return contents

@@ -25,6 +25,11 @@ class CredentialManager:
 
         # 并发控制（简化）
         self._operation_lock = asyncio.Lock()
+        
+        # 高级防护模块（延迟初始化）
+        self._background_scheduler = None
+        self._quota_protection = None
+        self._smart_warmup = None
 
     async def initialize(self):
         """初始化凭证管理器"""
@@ -34,10 +39,20 @@ class CredentialManager:
 
             # 初始化统一存储适配器
             self._storage_adapter = await get_storage_adapter()
+            
+            # 初始化高级防护模块
+            await self._init_advanced_protection()
 
     async def close(self):
         """清理资源"""
         log.debug("Closing credential manager...")
+        
+        # 停止高级防护模块
+        if self._background_scheduler:
+            self._background_scheduler.stop()
+        if self._smart_warmup:
+            self._smart_warmup.stop()
+            
         self._initialized = False
         log.debug("Credential manager closed")
 
@@ -58,28 +73,100 @@ class CredentialManager:
             # 使用 SQL 随机查询获取可用凭证
             if hasattr(self._storage_adapter._backend, 'get_next_available_credential'):
                 # SQLite 后端：直接用智能 SQL（已经是随机选择）
-                result = await self._storage_adapter._backend.get_next_available_credential(
-                    is_antigravity=is_antigravity, model_key=model_key
-                )
-                if result:
+                # 注意：QuotaProtection 可能拒绝单个账号；此处做小循环尝试“下一个”，避免误判无可用账号
+                max_attempts = 10
+                for _ in range(max_attempts):
+                    result = await self._storage_adapter._backend.get_next_available_credential(
+                        is_antigravity=is_antigravity, model_key=model_key
+                    )
+                    if not result:
+                        return None
+
                     filename, credential_data = result
+
+                    # [高级防护] 配额保护检查
+                    if self._quota_protection and is_antigravity:
+                        is_ok = await self._quota_protection.check_and_protect(
+                            filename, credential_data, is_antigravity
+                        )
+                        if not is_ok:
+                            log.warning(f"[QuotaProtection] 凭证 {filename} 被保护，尝试下一个")
+                            continue
+
                     # Token 刷新检查
                     if await self._should_refresh_token(credential_data):
                         log.debug(f"Token需要刷新 - 文件: {filename} (antigravity={is_antigravity})")
-                        refreshed_data = await self._refresh_token(credential_data, filename, is_antigravity=is_antigravity)
+                        refreshed_data = await self._refresh_token(
+                            credential_data, filename, is_antigravity=is_antigravity
+                        )
                         if refreshed_data:
                             credential_data = refreshed_data
                             log.debug(f"Token刷新成功: {filename} (antigravity={is_antigravity})")
                         else:
                             log.error(f"Token刷新失败: {filename} (antigravity={is_antigravity})")
-                            return None
+                            continue
+
                     return filename, credential_data
+
+                log.warning(
+                    f"[CredentialManager] 无可用凭证（尝试{max_attempts}次）"
+                    f" antigravity={is_antigravity}, model_key={model_key}"
+                )
                 return None
             else:
                 # MongoDB/Postgres 后端：使用传统方法（随机选择）
                 return await self._get_valid_credential_traditional(
                     is_antigravity=is_antigravity, model_key=model_key
                 )
+
+    async def get_earliest_model_cooldown(
+        self,
+        *,
+        is_antigravity: bool,
+        model_key: str,
+    ) -> Optional[float]:
+        """
+        获取指定模型在所有凭证中的最早冷却截止时间（Unix 时间戳）。
+
+        用途：当“当前无可用凭证”时，如果最早冷却很快到期，可短暂等待而不是立刻触发跨池降级。
+        """
+        try:
+            if not model_key:
+                return None
+
+            all_creds = await self._storage_adapter.list_credentials(is_antigravity=is_antigravity)
+            if not all_creds:
+                return None
+
+            now = time.time()
+            earliest: Optional[float] = None
+
+            for filename in all_creds:
+                state = await self._storage_adapter.get_credential_state(filename, is_antigravity=is_antigravity)
+                if state.get("disabled", False):
+                    continue
+
+                model_cooldowns = state.get("model_cooldowns", {}) or {}
+                ts = model_cooldowns.get(model_key)
+                if ts is None:
+                    continue
+
+                try:
+                    tsf = float(ts)
+                except Exception:
+                    continue
+
+                if tsf <= now:
+                    continue
+
+                if earliest is None or tsf < earliest:
+                    earliest = tsf
+
+            return earliest
+
+        except Exception as e:
+            log.debug(f"[CredentialManager] get_earliest_model_cooldown failed: {e}")
+            return None
 
     async def _get_valid_credential_traditional(
         self, is_antigravity: bool = False, model_key: Optional[str] = None
@@ -525,6 +612,51 @@ class CredentialManager:
         # 默认认为是临时错误（如网络问题），不应封禁凭证
         log.debug("未匹配到明确的永久失效模式，判定为临时错误")
         return False
+
+    async def _init_advanced_protection(self):
+        """初始化高级防护模块"""
+        try:
+            from config import (
+                get_background_refresh_enabled,
+                get_refresh_interval,
+                get_quota_protection_enabled,
+                get_smart_warmup_enabled
+            )
+            
+            # 初始化配额保护模块
+            from .quota_protection import QuotaProtection
+            self._quota_protection = QuotaProtection(self)
+            log.info("[CredentialManager] ✓ 配额保护模块已加载")
+            
+            # 初始化后台调度器
+            from .background_scheduler import BackgroundScheduler
+            self._background_scheduler = BackgroundScheduler(self)
+            
+            # 检查是否启用后台刷新
+            if await get_background_refresh_enabled():
+                interval = await get_refresh_interval()
+                await self._background_scheduler.start_auto_refresh(interval)
+                log.info(f"[CredentialManager] ✓ 后台刷新已启动 (间隔: {interval}分钟)")
+            else:
+                log.info("[CredentialManager] 后台刷新未启用")
+            
+            # 初始化智能预热模块
+            from .smart_warmup import SmartWarmup
+            self._smart_warmup = SmartWarmup(self)
+            
+            # 检查是否启用智能预热
+            if await get_smart_warmup_enabled():
+                await self._smart_warmup.start_scheduler()
+                log.info("[CredentialManager] ✓ 智能预热已启动")
+            else:
+                log.info("[CredentialManager] 智能预热未启用")
+                
+            self._initialized = True
+            
+        except Exception as e:
+            log.error(f"[CredentialManager] 高级防护初始化失败: {e}")
+            # 即使高级防护失败，也标记为已初始化（核心功能仍可用）
+            self._initialized = True
 
 # 全局实例管理（保持兼容性）
 _credential_manager: Optional[CredentialManager] = None

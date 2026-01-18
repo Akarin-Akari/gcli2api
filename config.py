@@ -7,7 +7,7 @@ Centralizes all configuration to avoid duplication across modules.
 """
 
 import os
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 # 全局配置缓存
 _config_cache: dict[str, Any] = {}
@@ -393,3 +393,176 @@ async def get_antigravity_api_url() -> str:
             "ANTIGRAVITY_API_URL",
         )
     )
+
+
+async def get_antigravity_fallback_urls() -> List[str]:
+    """
+    Get Antigravity API fallback URLs for BaseURL failover.
+
+    对齐 CLIProxyAPI 的多层级故障转移策略：
+    1. 沙箱环境（Sandbox）- 最高优先级
+    2. Daily 环境（Daily）
+    3. 生产环境（Production）
+
+    Returns:
+        按优先级排序的 BaseURL 列表
+    """
+    # 获取主 URL（用户配置的优先级最高）
+    primary_url = await get_antigravity_api_url()
+
+    # 定义所有可用的 BaseURL（按优先级排序）
+    all_urls = [
+        "https://daily-cloudcode-pa.sandbox.googleapis.com",  # 沙箱
+        "https://daily-cloudcode-pa.googleapis.com",          # Daily
+        "https://cloudcode-pa.googleapis.com",                # 生产
+    ]
+
+    # 如果主 URL 不在列表中，将其作为最高优先级
+    if primary_url not in all_urls:
+        all_urls.insert(0, primary_url)
+    else:
+        # 将主 URL 移到列表开头
+        all_urls.remove(primary_url)
+        all_urls.insert(0, primary_url)
+
+    return all_urls
+
+
+# ==================== 后台刷新配置 ====================
+
+async def get_background_refresh_enabled() -> bool:
+    """
+    Get background refresh enabled setting.
+    
+    启用后台自动刷新配额功能。
+    
+    Environment variable: BACKGROUND_REFRESH_ENABLED
+    Database config key: background_refresh_enabled
+    Default: False
+    """
+    env_value = os.getenv("BACKGROUND_REFRESH_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    
+    return bool(await get_config_value("background_refresh_enabled", False))
+
+
+async def get_refresh_interval() -> int:
+    """
+    Get refresh interval in minutes.
+    
+    后台刷新间隔（分钟）。
+    
+    Environment variable: REFRESH_INTERVAL_MINUTES
+    Database config key: refresh_interval
+    Default: 15
+    """
+    env_value = os.getenv("REFRESH_INTERVAL_MINUTES")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    
+    return int(await get_config_value("refresh_interval", 15))
+
+
+# ==================== 配额保护配置 ====================
+
+async def get_quota_protection_enabled() -> bool:
+    """
+    Get quota protection enabled setting.
+    
+    启用配额保护功能，当高级模型配额低于阈值时自动禁用账号。
+    
+    Environment variable: QUOTA_PROTECTION_ENABLED
+    Database config key: quota_protection_enabled
+    Default: False
+    """
+    env_value = os.getenv("QUOTA_PROTECTION_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    
+    return bool(await get_config_value("quota_protection_enabled", False))
+
+
+async def get_quota_protection_threshold() -> int:
+    """
+    Get quota protection threshold percentage.
+    
+    配额保护阈值（百分比），低于此值时禁用账号。
+    
+    Environment variable: QUOTA_PROTECTION_THRESHOLD
+    Database config key: quota_protection_threshold
+    Default: 10
+    """
+    env_value = os.getenv("QUOTA_PROTECTION_THRESHOLD")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    
+    return int(await get_config_value("quota_protection_threshold", 10))
+
+
+async def get_quota_protection_models() -> list:
+    """
+    Get quota protection monitored models.
+    
+    需要监控配额的模型列表。
+    
+    Environment variable: QUOTA_PROTECTION_MODELS (comma-separated)
+    Database config key: quota_protection_models
+    Default: ["claude-sonnet-4-5", "claude-opus-4-5", "gemini-3-pro"]
+    """
+    env_value = os.getenv("QUOTA_PROTECTION_MODELS")
+    if env_value:
+        return [model.strip() for model in env_value.split(",") if model.strip()]
+    
+    models = await get_config_value("quota_protection_models")
+    if models and isinstance(models, list):
+        return models
+    
+    return ["claude-sonnet-4-5", "claude-opus-4-5", "gemini-3-pro"]
+
+
+# ==================== 智能预热配置 ====================
+
+async def get_smart_warmup_enabled() -> bool:
+    """
+    Get smart warmup enabled setting.
+    
+    启用智能预热功能，当配额恢复到 100% 时自动预热。
+    
+    Environment variable: SMART_WARMUP_ENABLED
+    Database config key: smart_warmup_enabled
+    Default: False
+    """
+    env_value = os.getenv("SMART_WARMUP_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    
+    return bool(await get_config_value("smart_warmup_enabled", False))
+
+
+async def get_warmup_models() -> list:
+    """
+    Get warmup monitored models.
+    
+    需要预热的模型列表。
+    
+    Environment variable: WARMUP_MODELS (comma-separated)
+    Database config key: warmup_models
+    Default: ["gemini-3-flash", "claude-sonnet-4-5", "gemini-3-pro-high", "gemini-3-pro-image"]
+    """
+    env_value = os.getenv("WARMUP_MODELS")
+    if env_value:
+        return [model.strip() for model in env_value.split(",") if model.strip()]
+    
+    models = await get_config_value("warmup_models")
+    if models and isinstance(models, list):
+        return models
+    
+    return ["gemini-3-flash", "claude-sonnet-4-5", "gemini-3-pro-high", "gemini-3-pro-image"]
+

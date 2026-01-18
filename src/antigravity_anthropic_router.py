@@ -857,6 +857,35 @@ async def anthropic_messages(
         log.error(f"[ANTHROPIC] 所有降级模型均失败: {last_error}")
         return _anthropic_error(status_code=500, message="下游请求失败（已尝试所有降级模型）", error_type="api_error")
 
+    # ✅ [FIX 2026-01-17] 检查响应数据是否有内容
+    if not response_data:
+        log.error("[ANTHROPIC] 响应数据为空")
+        return _anthropic_error(status_code=500, message="Empty response from upstream", error_type="api_error")
+    
+    # 检查响应中是否有实际内容
+    candidate = response_data.get("response", {}).get("candidates", [{}])[0] or {}
+    parts = candidate.get("content", {}).get("parts", []) or []
+    has_content = any(
+        part.get("text") or 
+        part.get("functionCall") or 
+        part.get("inlineData") or 
+        (part.get("thought") is True and part.get("text"))
+        for part in parts if isinstance(part, dict)
+    )
+    
+    if not has_content:
+        log.warning(
+            f"[ANTHROPIC] ⚠️ WARNING: Response has no content! "
+            f"parts_count={len(parts)}, finish_reason={candidate.get('finishReason')}, "
+            f"response_keys={list(response_data.keys())}"
+        )
+        # 返回一个错误响应，而不是空的 content
+        return _anthropic_error(
+            status_code=500, 
+            message="Response from upstream contains no content", 
+            error_type="api_error"
+        )
+    
     anthropic_response = _convert_antigravity_response_to_anthropic_message(
         response_data,
         model=str(model),

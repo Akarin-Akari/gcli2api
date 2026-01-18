@@ -28,7 +28,16 @@ from starlette.websockets import WebSocketState
 
 import config
 from log import log
-from .signature_cache import get_cache_stats, get_signature_cache
+from .signature_cache import (
+    get_cache_stats,
+    get_signature_cache,
+    # Phase 3 迁移控制函数
+    enable_migration_mode,
+    disable_migration_mode,
+    is_migration_mode_enabled,
+    get_migration_status,
+    set_migration_phase,
+)
 
 from .auth import (
     asyncio_complete_auth_flow,
@@ -1966,4 +1975,368 @@ async def signature_cache_cleanup(token: str = Depends(verify_panel_token)):
             status_code=500,
             content={"success": False, "error": str(e)}
         )
+
+
+# ==================== 缓存迁移控制 API（Phase 3）====================
+
+@router.get("/cache/migration/status")
+async def cache_migration_status(token: str = Depends(verify_panel_token)):
+    """
+    获取缓存迁移状态
+
+    返回:
+    - migration_mode_enabled: 是否启用迁移模式
+    - runtime_override: 运行时覆盖设置
+    - env_var: 环境变量值
+    - facade_status: 门面状态（如果启用迁移模式）
+    """
+    try:
+        status = get_migration_status()
+        return JSONResponse(content={
+            "success": True,
+            "data": status
+        })
+    except Exception as e:
+        log.error(f"获取缓存迁移状态失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.post("/cache/migration/enable")
+async def cache_migration_enable(token: str = Depends(verify_panel_token)):
+    """
+    启用缓存迁移模式
+
+    启用后，缓存操作将通过 CacheFacade 进行，
+    可以进一步设置迁移阶段来控制双写行为。
+    """
+    try:
+        enable_migration_mode()
+        status = get_migration_status()
+        log.info("[CACHE_MIGRATION] 通过 API 启用迁移模式")
+        return JSONResponse(content={
+            "success": True,
+            "message": "迁移模式已启用",
+            "data": status
+        })
+    except Exception as e:
+        log.error(f"启用缓存迁移模式失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.post("/cache/migration/disable")
+async def cache_migration_disable(token: str = Depends(verify_panel_token)):
+    """
+    禁用缓存迁移模式
+
+    禁用后，恢复使用原有的 SignatureCache 实现。
+    """
+    try:
+        disable_migration_mode()
+        status = get_migration_status()
+        log.info("[CACHE_MIGRATION] 通过 API 禁用迁移模式")
+        return JSONResponse(content={
+            "success": True,
+            "message": "迁移模式已禁用",
+            "data": status
+        })
+    except Exception as e:
+        log.error(f"禁用缓存迁移模式失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.post("/cache/migration/phase")
+async def cache_migration_set_phase(
+    phase: str,
+    token: str = Depends(verify_panel_token)
+):
+    """
+    设置缓存迁移阶段
+
+    可用阶段:
+    - LEGACY_ONLY: 只使用旧缓存（默认，零风险）
+    - DUAL_WRITE: 双写模式（写入新旧，读取旧优先）
+    - NEW_PREFERRED: 新缓存优先（写入新旧，读取新优先）
+    - NEW_ONLY: 只使用新缓存（迁移完成）
+
+    注意: 需要先启用迁移模式才能设置迁移阶段
+    """
+    valid_phases = ["LEGACY_ONLY", "DUAL_WRITE", "NEW_PREFERRED", "NEW_ONLY"]
+    phase_upper = phase.upper()
+
+    if phase_upper not in valid_phases:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": f"无效的迁移阶段: {phase}",
+                "valid_phases": valid_phases
+            }
+        )
+
+    if not is_migration_mode_enabled():
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": "请先启用迁移模式",
+                "hint": "调用 POST /cache/migration/enable 启用迁移模式"
+            }
+        )
+
+    try:
+        set_migration_phase(phase_upper)
+        status = get_migration_status()
+        log.info(f"[CACHE_MIGRATION] 通过 API 设置迁移阶段: {phase_upper}")
+        return JSONResponse(content={
+            "success": True,
+            "message": f"迁移阶段已设置为: {phase_upper}",
+            "data": status
+        })
+    except Exception as e:
+        log.error(f"设置缓存迁移阶段失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.post("/cache/migration/enable-phase2")
+async def cache_migration_enable_phase2(token: str = Depends(verify_panel_token)):
+    """
+    一键启用 Phase 2 双写模式
+
+    这是一个便捷端点，相当于依次调用:
+    1. POST /cache/migration/enable
+    2. POST /cache/migration/phase?phase=DUAL_WRITE
+
+    Phase 2 双写模式特点:
+    - 写入: 同时写入旧缓存和新缓存
+    - 读取: 优先从旧缓存读取
+    - 风险: 低（旧缓存仍然是主要来源）
+    """
+    try:
+        # 启用迁移模式
+        enable_migration_mode()
+        log.info("[CACHE_MIGRATION] 通过 API 启用迁移模式")
+
+        # 设置为 DUAL_WRITE 阶段
+        set_migration_phase("DUAL_WRITE")
+        log.info("[CACHE_MIGRATION] 通过 API 设置迁移阶段: DUAL_WRITE")
+
+        # 获取最终状态
+        status = get_migration_status()
+
+        return JSONResponse(content={
+            "success": True,
+            "message": "Phase 2 双写模式已启用",
+            "phase": "DUAL_WRITE",
+            "description": {
+                "write": "同时写入旧缓存和新缓存",
+                "read": "优先从旧缓存读取",
+                "risk": "低"
+            },
+            "data": status
+        })
+    except Exception as e:
+        log.error(f"启用 Phase 2 双写模式失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.get("/cache/migration/stats")
+async def cache_migration_stats(token: str = Depends(verify_panel_token)):
+    """
+    获取缓存迁移详细统计信息
+
+    包含:
+    - 双写统计 (legacy/new 写入成功率)
+    - 读取统计 (命中来源分布)
+    - 一致性检查结果
+    """
+    try:
+        if not is_migration_mode_enabled():
+            return JSONResponse(content={
+                "success": True,
+                "message": "迁移模式未启用，返回旧缓存统计",
+                "data": get_cache_stats()
+            })
+
+        status = get_migration_status()
+        stats = get_cache_stats()
+
+        return JSONResponse(content={
+            "success": True,
+            "data": {
+                "migration_status": status,
+                "cache_stats": stats
+            }
+        })
+    except Exception as e:
+        log.error(f"获取缓存迁移统计失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+# ==================== 高级防护管理 API ====================
+
+@router.get("/protection/status")
+async def get_protection_status(token: str = Depends(verify_panel_token)):
+    """
+    获取高级防护模块状态
+    
+    返回:
+    - background_refresh: 后台刷新状态
+    - quota_protection: 配额保护状态
+    - smart_warmup: 智能预热状态
+    """
+    try:
+        from config import (
+            get_background_refresh_enabled,
+            get_refresh_interval,
+            get_quota_protection_enabled,
+            get_quota_protection_threshold,
+            get_quota_protection_models,
+            get_smart_warmup_enabled,
+            get_warmup_models
+        )
+        
+        status = {
+            "background_refresh": {
+                "enabled": await get_background_refresh_enabled(),
+                "interval_minutes": await get_refresh_interval()
+            },
+            "quota_protection": {
+                "enabled": await get_quota_protection_enabled(),
+                "threshold_percentage": await get_quota_protection_threshold(),
+                "monitored_models": await get_quota_protection_models()
+            },
+            "smart_warmup": {
+                "enabled": await get_smart_warmup_enabled(),
+                "monitored_models": await get_warmup_models()
+            }
+        }
+        
+        return JSONResponse(content={
+            "success": True,
+            "data": status
+        })
+    except Exception as e:
+        log.error(f"获取高级防护状态失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.post("/protection/refresh-quotas")
+async def trigger_refresh_quotas(token: str = Depends(verify_panel_token)):
+    """
+    手动触发刷新所有账号配额
+    """
+    try:
+        await ensure_credential_manager_initialized()
+        cred_mgr = await get_credential_manager()
+        
+        if cred_mgr._background_scheduler:
+            await cred_mgr._background_scheduler._refresh_all_quotas()
+            return JSONResponse(content={
+                "success": True,
+                "message": "配额刷新已完成"
+            })
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "后台调度器未初始化"
+                }
+            )
+    except Exception as e:
+        log.error(f"手动刷新配额失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.post("/protection/scan-quotas")
+async def trigger_scan_quotas(token: str = Depends(verify_panel_token)):
+    """
+    手动触发配额保护扫描
+    """
+    try:
+        await ensure_credential_manager_initialized()
+        cred_mgr = await get_credential_manager()
+        
+        if cred_mgr._quota_protection:
+            await cred_mgr._quota_protection.scan_all_credentials(is_antigravity=True)
+            return JSONResponse(content={
+                "success": True,
+                "message": "配额保护扫描已完成"
+            })
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "配额保护模块未初始化"
+                }
+            )
+    except Exception as e:
+        log.error(f"配额保护扫描失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.post("/protection/trigger-warmup")
+async def trigger_warmup(
+    credential_name: str = None,
+    token: str = Depends(verify_panel_token)
+):
+    """
+    手动触发智能预热
+    
+    Args:
+        credential_name: 指定凭证名称（可选），不指定则预热所有
+    """
+    try:
+        await ensure_credential_manager_initialized()
+        cred_mgr = await get_credential_manager()
+        
+        if cred_mgr._smart_warmup:
+            await cred_mgr._smart_warmup.trigger_manual_warmup(credential_name)
+            return JSONResponse(content={
+                "success": True,
+                "message": f"预热已触发: {credential_name or '全部'}"
+            })
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "智能预热模块未初始化"
+                }
+            )
+    except Exception as e:
+        log.error(f"手动预热失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
 

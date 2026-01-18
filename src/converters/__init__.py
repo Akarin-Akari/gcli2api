@@ -31,6 +31,19 @@ from .tool_converter import (
     validate_tools_batch,
 )
 
+# [FIX 2026-01-11] 新增 gemini_fix 模块 - 上游同步
+from .gemini_fix import (
+    ALLOWED_PART_KEYS,
+    clean_part_fields,
+    clean_contents,
+    normalize_gemini_request,
+    check_last_assistant_has_thinking,
+    is_thinking_model,
+    is_search_model,
+    get_base_model_name,
+    get_thinking_settings,
+)
+
 __all__ = [
     # model_config
     "model_mapping",
@@ -51,4 +64,13 @@ __all__ = [
     "validate_tool_parameters",
     "validate_antigravity_tool",
     "validate_tools_batch",
+    # gemini_fix - [FIX 2026-01-11] 上游同步
+    "ALLOWED_PART_KEYS",
+    "clean_part_fields",
+    "clean_contents",
+    "normalize_gemini_request",
+    "check_last_assistant_has_thinking",
+    "is_search_model",
+    "get_base_model_name",
+    "get_thinking_settings",
 ]

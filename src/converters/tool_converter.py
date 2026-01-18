@@ -14,6 +14,14 @@ from log import log
 from src.models import GeminiGenerationConfig
 
 
+# ==================== 双向限制策略常量（移植自 anthropic_converter.py）====================
+# [FIX 2026-01-10] 双向限制策略：既要保证足够的输出空间，又不能让 max_tokens 过大触发 429
+# [FIX 2026-01-11] 提高输出空间限制，支持写长文档（MD文档可能需要 10K-30K tokens）
+MAX_ALLOWED_TOKENS = 65535   # max_tokens 的绝对上限（Claude 最大值）
+MIN_OUTPUT_TOKENS = 16384    # 实际输出的最小保障空间（4096 -> 16384，支持长文档输出）
+DEFAULT_MAX_OUTPUT_TOKENS = 32768  # 默认的 maxOutputTokens（16384 -> 32768，确保足够的输出空间）
+
+
 # ==================== 工具格式验证 ====================
 
 def validate_tool_name(name: Any) -> Tuple[bool, str, Optional[str]]:
@@ -422,6 +430,11 @@ def generate_generation_config(
 ) -> Dict[str, Any]:
     """
     生成 Antigravity generationConfig，使用 GeminiGenerationConfig 模型
+    
+    [FIX 2026-01-10] 添加双向限制策略：
+    - 设置默认 maxOutputTokens（当客户端未指定时）
+    - 添加上限保护（防止 429 错误）
+    - thinking 模式下确保足够的输出空间
     """
     # 构建基础配置 - Stop sequences 使用列表变量
     stop_seqs = []
@@ -442,8 +455,29 @@ def generate_generation_config(
     if "top_p" in parameters:
         config_dict["topP"] = parameters["top_p"]
 
-    if "max_tokens" in parameters:
-        config_dict["maxOutputTokens"] = parameters["max_tokens"]
+    # [FIX 2026-01-10] 双向限制策略处理 maxOutputTokens
+    max_tokens = parameters.get("max_tokens")
+    if max_tokens is not None:
+        # 添加上限保护，防止过大的 max_tokens 导致 429 错误
+        if isinstance(max_tokens, int) and max_tokens > MAX_ALLOWED_TOKENS:
+            log.warning(
+                f"[ANTIGRAVITY] maxOutputTokens 超过上限: {max_tokens} -> {MAX_ALLOWED_TOKENS}"
+            )
+            max_tokens = MAX_ALLOWED_TOKENS
+
+        # [FIX 2026-01-12] 添加下限保护，防止客户端传来过小的 max_tokens 导致输出被截断
+        # 这是之前修复都不生效的真正根因：antigravity_router 使用的是这个函数，不是 anthropic_converter 的！
+        if isinstance(max_tokens, int) and max_tokens < MIN_OUTPUT_TOKENS:
+            log.info(
+                f"[ANTIGRAVITY] maxOutputTokens 低于下限: {max_tokens} -> {MIN_OUTPUT_TOKENS}"
+            )
+            max_tokens = MIN_OUTPUT_TOKENS
+
+        config_dict["maxOutputTokens"] = max_tokens
+    else:
+        # 设置默认值，确保有足够的输出空间
+        config_dict["maxOutputTokens"] = DEFAULT_MAX_OUTPUT_TOKENS
+        log.debug(f"[ANTIGRAVITY] 使用默认 maxOutputTokens: {DEFAULT_MAX_OUTPUT_TOKENS}")
 
     # 图片生成相关参数
     if "response_modalities" in parameters:
@@ -454,9 +488,37 @@ def generate_generation_config(
 
     # 思考模型配置
     if enable_thinking:
+        thinking_budget = 1024  # 默认 thinking budget
+        
+        # [FIX 2026-01-10] 双向限制策略：确保 thinking 模式下有足够的输出空间
+        current_max_tokens = config_dict.get("maxOutputTokens", DEFAULT_MAX_OUTPUT_TOKENS)
+        
+        # Step 1: 计算需要的总 tokens
+        required_tokens = thinking_budget + MIN_OUTPUT_TOKENS
+        
+        if required_tokens > MAX_ALLOWED_TOKENS:
+            # 需要下调 thinkingBudget
+            adjusted_budget = MAX_ALLOWED_TOKENS - MIN_OUTPUT_TOKENS
+            if adjusted_budget > 0:
+                thinking_budget = adjusted_budget
+                log.info(
+                    f"[ANTIGRAVITY][thinking] 双向限制生效：thinkingBudget 下调 1024 -> {adjusted_budget} "
+                    f"(MAX_ALLOWED={MAX_ALLOWED_TOKENS}, MIN_OUTPUT={MIN_OUTPUT_TOKENS})"
+                )
+        
+        # Step 2: 确保 max_tokens >= budget + MIN_OUTPUT_TOKENS
+        min_required = thinking_budget + MIN_OUTPUT_TOKENS
+        if current_max_tokens < min_required:
+            new_max_tokens = min(min_required, MAX_ALLOWED_TOKENS)
+            config_dict["maxOutputTokens"] = new_max_tokens
+            log.info(
+                f"[ANTIGRAVITY][thinking] 双向限制生效：maxOutputTokens 提升 {current_max_tokens} -> {new_max_tokens} "
+                f"(thinkingBudget={thinking_budget}, 实际输出空间={new_max_tokens - thinking_budget})"
+            )
+        
         config_dict["thinkingConfig"] = {
             "includeThoughts": True,
-            "thinkingBudget": 1024
+            "thinkingBudget": thinking_budget
         }
 
         # Claude 思考模型：删除 topP 参数
