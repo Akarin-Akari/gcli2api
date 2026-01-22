@@ -1,4 +1,4 @@
-# 🚀 gcli2api - Akarin Fork 增强版
+# 🚀 gcli2api - Akarin Fork 自用增强版
 
 > ⭐ **这是 [su-kaka/gcli2api](https://github.com/su-kaka/gcli2api) 的增强 Fork 版本**
 >
