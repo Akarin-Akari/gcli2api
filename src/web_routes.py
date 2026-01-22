@@ -1785,7 +1785,15 @@ async def verify_credential_project_common(filename: str, is_antigravity: bool =
             "error_codes": []
         }, is_antigravity=is_antigravity)
 
-        log.info(f"检验{cred_type}凭证成功: {filename} - Project ID: {project_id} - 已解除禁用并清除错误码")
+        # [FIX 2026-01-22] 清除限流状态池中的所有记录
+        # 解决偶发限流问题：检验功能切换projectID后，内部限流状态未清除导致的问题
+        from src.rate_limit_registry import clear_rate_limit_for_credential
+        rate_limit_cleared = await clear_rate_limit_for_credential(filename)
+
+        # [FIX 2026-01-22] 清除模型级冷却
+        await storage_adapter.clear_all_model_cooldowns(filename, is_antigravity=is_antigravity)
+
+        log.info(f"检验{cred_type}凭证成功: {filename} - Project ID: {project_id} - 已解除禁用、清除错误码和限流状态(cleared={rate_limit_cleared})")
 
         return JSONResponse(content={
             "success": True,
@@ -2338,5 +2346,411 @@ async def trigger_warmup(
             status_code=500,
             content={"success": False, "error": str(e)}
         )
+
+
+# ============ 凭证去重路由 ============
+
+@router.post("/creds/deduplicate-by-email")
+async def deduplicate_credentials_by_email(token: str = Depends(verify_panel_token)):
+    """批量去重GCLI凭证文件 - 删除邮箱相同的凭证（只保留一个）"""
+    try:
+        return await deduplicate_credentials_by_email_common(is_antigravity=False)
+    except Exception as e:
+        log.error(f"批量去重GCLI凭证失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/antigravity/creds/deduplicate-by-email")
+async def deduplicate_antigravity_credentials_by_email(token: str = Depends(verify_panel_token)):
+    """批量去重Antigravity凭证文件 - 删除邮箱相同的凭证（只保留一个）"""
+    try:
+        return await deduplicate_credentials_by_email_common(is_antigravity=True)
+    except Exception as e:
+        log.error(f"批量去重Antigravity凭证失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def deduplicate_credentials_by_email_common(is_antigravity: bool = False) -> JSONResponse:
+    """批量去重凭证文件的通用函数 - 删除邮箱相同的凭证（只保留一个）"""
+    storage_adapter = await get_storage_adapter()
+
+    try:
+        # 获取所有凭证
+        all_credentials = await storage_adapter.list_all_credentials(is_antigravity=is_antigravity)
+
+        # 按邮箱分组
+        email_groups = {}
+        no_email_files = []
+
+        for filename in all_credentials:
+            try:
+                cred_data = await storage_adapter.get_credential(filename, is_antigravity=is_antigravity)
+                if cred_data:
+                    user_email = cred_data.get("user_email", "")
+                    if user_email:
+                        if user_email not in email_groups:
+                            email_groups[user_email] = []
+                        email_groups[user_email].append(filename)
+                    else:
+                        no_email_files.append(filename)
+            except Exception as e:
+                log.warning(f"读取凭证 {filename} 失败: {e}")
+                continue
+
+        # 找出重复的凭证组
+        duplicate_groups = []
+        for email, files in email_groups.items():
+            if len(files) > 1:
+                # 保留第一个，删除其他
+                duplicate_groups.append({
+                    "email": email,
+                    "kept_file": files[0],
+                    "duplicate_files": files[1:]
+                })
+
+        if not duplicate_groups:
+            return JSONResponse(
+                content={
+                    "deleted_count": 0,
+                    "kept_count": len(all_credentials),
+                    "total_count": len(all_credentials),
+                    "unique_emails_count": len(email_groups),
+                    "no_email_count": len(no_email_files),
+                    "duplicate_groups": [],
+                    "delete_errors": [],
+                    "message": "没有发现重复的凭证（相同邮箱）",
+                }
+            )
+
+        # 执行删除操作
+        deleted_count = 0
+        delete_errors = []
+        result_duplicate_groups = []
+
+        for group in duplicate_groups:
+            email = group["email"]
+            kept_file = group["kept_file"]
+            duplicate_files = group["duplicate_files"]
+
+            deleted_files_in_group = []
+            for filename in duplicate_files:
+                try:
+                    success = await credential_manager.remove_credential(filename, is_antigravity=is_antigravity)
+                    if success:
+                        deleted_count += 1
+                        deleted_files_in_group.append(filename)
+                        log.info(f"去重删除凭证: {filename} (邮箱: {email}) (is_antigravity={is_antigravity})")
+                    else:
+                        delete_errors.append(f"{filename}: 删除失败")
+                except Exception as e:
+                    delete_errors.append(f"{filename}: {str(e)}")
+                    log.error(f"去重删除凭证 {filename} 时出错: {e}")
+
+            result_duplicate_groups.append({
+                "email": email,
+                "kept_file": kept_file,
+                "deleted_files": deleted_files_in_group,
+                "duplicate_count": len(deleted_files_in_group),
+            })
+
+        kept_count = len(all_credentials) - deleted_count
+
+        return JSONResponse(
+            content={
+                "deleted_count": deleted_count,
+                "kept_count": kept_count,
+                "total_count": len(all_credentials),
+                "unique_emails_count": len(email_groups),
+                "no_email_count": len(no_email_files),
+                "duplicate_groups": result_duplicate_groups,
+                "delete_errors": delete_errors,
+                "message": f"去重完成，删除了 {deleted_count} 个重复凭证",
+            }
+        )
+
+    except Exception as e:
+        log.error(f"去重凭证失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ 版本信息路由 ============
+
+@router.get("/version/info")
+async def get_version_info(check_update: bool = False):
+    """
+    获取当前版本信息 - 从Git获取或version.txt读取
+    可选参数 check_update: 是否检查GitHub上的最新版本
+    """
+    try:
+        import subprocess
+
+        # 获取项目根目录
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        # 尝试从Git获取版本信息
+        try:
+            short_hash = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=project_root,
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+
+            full_hash = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=project_root,
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+
+            commit_message = subprocess.check_output(
+                ["git", "log", "-1", "--format=%s"],
+                cwd=project_root,
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+
+            commit_date = subprocess.check_output(
+                ["git", "log", "-1", "--format=%ci"],
+                cwd=project_root,
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+
+            version_data = {
+                "short_hash": short_hash,
+                "full_hash": full_hash,
+                "message": commit_message,
+                "date": commit_date
+            }
+        except Exception:
+            # Git不可用，尝试读取version.txt
+            version_file = os.path.join(project_root, "version.txt")
+            if os.path.exists(version_file):
+                version_data = {}
+                with open(version_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if '=' in line:
+                            key, value = line.split('=', 1)
+                            version_data[key] = value
+            else:
+                return JSONResponse({
+                    "success": False,
+                    "error": "无法获取版本信息（Git不可用且version.txt不存在）"
+                })
+
+        response_data = {
+            "success": True,
+            "version": version_data.get('short_hash', 'unknown'),
+            "full_hash": version_data.get('full_hash', ''),
+            "message": version_data.get('message', ''),
+            "date": version_data.get('date', '')
+        }
+
+        # 如果需要检查更新
+        if check_update:
+            try:
+                from src.httpx_client import get_async
+
+                # 直接获取GitHub上的version.txt文件
+                github_version_url = "https://raw.githubusercontent.com/Akarin-Akari/gcli2api/refs/heads/master/version.txt"
+
+                resp = await get_async(github_version_url, timeout=10.0)
+
+                if resp.status_code == 200:
+                    remote_version_data = {}
+                    for line in resp.text.strip().split('\n'):
+                        line = line.strip()
+                        if '=' in line:
+                            key, value = line.split('=', 1)
+                            remote_version_data[key] = value
+
+                    latest_hash = remote_version_data.get('full_hash', '')
+                    latest_short_hash = remote_version_data.get('short_hash', '')
+                    current_hash = version_data.get('full_hash', '')
+
+                    has_update = (current_hash != latest_hash) if current_hash and latest_hash else None
+
+                    response_data['check_update'] = True
+                    response_data['has_update'] = has_update
+                    response_data['latest_version'] = latest_short_hash
+                    response_data['latest_hash'] = latest_hash
+                    response_data['latest_message'] = remote_version_data.get('message', '')
+                    response_data['latest_date'] = remote_version_data.get('date', '')
+                else:
+                    response_data['check_update'] = False
+                    response_data['update_error'] = f"GitHub返回错误: {resp.status_code}"
+
+            except Exception as e:
+                log.debug(f"检查更新失败: {e}")
+                response_data['check_update'] = False
+                response_data['update_error'] = str(e)
+
+        return JSONResponse(response_data)
+
+    except Exception as e:
+        log.error(f"获取版本信息失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        })
+
+
+# ============ [NEW 2026-01-22] Token 统计路由 ============
+
+@router.get("/stats/summary")
+async def get_token_stats_summary(
+    hours: int = 24,
+    token: str = Depends(verify_panel_token)
+):
+    """获取 Token 统计总览"""
+    try:
+        from src import token_stats
+        summary = await token_stats.get_summary_stats(hours)
+        return JSONResponse({
+            "success": True,
+            "data": {
+                "total_input_tokens": summary.total_input_tokens,
+                "total_output_tokens": summary.total_output_tokens,
+                "total_tokens": summary.total_tokens,
+                "total_requests": summary.total_requests,
+                "unique_accounts": summary.unique_accounts,
+                "unique_models": summary.unique_models
+            },
+            "hours": hours
+        })
+    except Exception as e:
+        log.error(f"获取统计总览失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/stats/by-model")
+async def get_token_stats_by_model(
+    hours: int = 24,
+    token: str = Depends(verify_panel_token)
+):
+    """按模型统计 Token 用量"""
+    try:
+        from src import token_stats
+        stats = await token_stats.get_model_stats(hours)
+        return JSONResponse({
+            "success": True,
+            "data": [
+                {
+                    "model": s.model,
+                    "total_input_tokens": s.total_input_tokens,
+                    "total_output_tokens": s.total_output_tokens,
+                    "total_tokens": s.total_tokens,
+                    "request_count": s.request_count
+                }
+                for s in stats
+            ],
+            "hours": hours
+        })
+    except Exception as e:
+        log.error(f"获取模型统计失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/stats/by-account")
+async def get_token_stats_by_account(
+    hours: int = 24,
+    token: str = Depends(verify_panel_token)
+):
+    """按账号统计 Token 用量"""
+    try:
+        from src import token_stats
+        stats = await token_stats.get_account_stats(hours)
+        return JSONResponse({
+            "success": True,
+            "data": [
+                {
+                    "account_email": s.account_email,
+                    "total_input_tokens": s.total_input_tokens,
+                    "total_output_tokens": s.total_output_tokens,
+                    "total_tokens": s.total_tokens,
+                    "request_count": s.request_count
+                }
+                for s in stats
+            ],
+            "hours": hours
+        })
+    except Exception as e:
+        log.error(f"获取账号统计失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/stats/trend/model")
+async def get_model_trend(
+    hours: int = 24,
+    granularity: str = "hourly",  # hourly | daily
+    token: str = Depends(verify_panel_token)
+):
+    """获取模型使用趋势"""
+    try:
+        from src import token_stats
+        if granularity == "daily":
+            days = max(1, hours // 24)
+            trend = await token_stats.get_model_trend_daily(days)
+        else:
+            trend = await token_stats.get_model_trend_hourly(hours)
+
+        return JSONResponse({
+            "success": True,
+            "data": [{"period": t.period, "data": t.data} for t in trend],
+            "granularity": granularity
+        })
+    except Exception as e:
+        log.error(f"获取模型趋势失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/stats/trend/account")
+async def get_account_trend(
+    hours: int = 24,
+    token: str = Depends(verify_panel_token)
+):
+    """获取账号使用趋势"""
+    try:
+        from src import token_stats
+        trend = await token_stats.get_account_trend_hourly(hours)
+        return JSONResponse({
+            "success": True,
+            "data": [{"period": t.period, "data": t.data} for t in trend]
+        })
+    except Exception as e:
+        log.error(f"获取账号趋势失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.delete("/stats/clear")
+async def clear_token_stats(
+    before_hours: int = None,
+    token: str = Depends(verify_panel_token)
+):
+    """清除统计数据"""
+    try:
+        from src import token_stats
+        await token_stats.clear_stats(before_hours)
+        return JSONResponse({
+            "success": True,
+            "message": f"统计数据已清除 (before_hours={before_hours})"
+        })
+    except Exception as e:
+        log.error(f"清除统计数据失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/stats/db-info")
+async def get_stats_db_info(token: str = Depends(verify_panel_token)):
+    """获取统计数据库信息"""
+    try:
+        from src import token_stats
+        size = await token_stats.get_stats_db_size()
+        return JSONResponse({
+            "success": True,
+            "db_size_bytes": size,
+            "db_size_mb": round(size / 1024 / 1024, 2)
+        })
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
 
 

@@ -81,7 +81,8 @@ class AnthropicSanitizer:
         messages: List[Dict],
         thinking_enabled: bool,
         session_id: Optional[str] = None,
-        last_thought_signature: Optional[str] = None
+        last_thought_signature: Optional[str] = None,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
     ) -> Tuple[List[Dict], bool]:
         """
         净化消息列表
@@ -91,6 +92,7 @@ class AnthropicSanitizer:
             thinking_enabled: 是否启用 thinking 模式
             session_id: 会话ID (可选,用于 Session Cache)
             last_thought_signature: 上下文中的最后一个 thinking 签名 (可选)
+            owner_id: 可选的所有者ID，用于多客户端会话隔离
 
         Returns:
             (sanitized_messages, should_enable_thinking)
@@ -104,11 +106,13 @@ class AnthropicSanitizer:
 
         try:
             # 1. 验证和恢复 thinking blocks
+            # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
             sanitized_messages = self._validate_and_recover_thinking_blocks(
                 messages,
                 thinking_enabled,
                 session_id,
-                last_thought_signature
+                last_thought_signature,
+                owner_id
             )
 
             # 2. 确保 tool_use/tool_result 链条完整性
@@ -140,21 +144,28 @@ class AnthropicSanitizer:
         messages: List[Dict],
         thinking_enabled: bool,
         session_id: Optional[str] = None,
-        last_thought_signature: Optional[str] = None
+        last_thought_signature: Optional[str] = None,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
     ) -> List[Dict]:
         """
         验证和恢复 thinking blocks
 
-        对每个消息中的 thinking block:
-        1. 检查是否有有效签名
-        2. 如果无效,尝试 6层签名恢复策略
-        3. 如果恢复失败,降级为 text block
+        [FIX 2026-01-21] 修正策略：
+        - 所有 assistant 消息的 thinking blocks：都尝试签名恢复
+        - 恢复成功：保留 thinking block
+        - 恢复失败：降级为 text block（而不是直接删除）
+
+        原因：
+        1. [修正] Signature 不是"会话绑定"的，而是用于验证 thinking 内容完整性
+        2. 只要 signature + thinking 内容匹配，任何请求都可以使用
+        3. 直接删除历史 thinking blocks 会导致 thinking 模式被禁用
 
         Args:
             messages: 消息列表
             thinking_enabled: 是否启用 thinking
             session_id: 会话ID
             last_thought_signature: 上下文签名
+            owner_id: 可选的所有者ID，用于多客户端会话隔离
 
         Returns:
             处理后的消息列表
@@ -163,10 +174,27 @@ class AnthropicSanitizer:
             # thinking 未启用,不需要验证
             return messages
 
+        # ================================================================
+        # [FIX 2026-01-20] 识别最后一条 assistant 消息的索引
+        # 参考 Antigravity-Manager: 保护最后 4 条消息（~2 轮对话）
+        # ================================================================
+        last_assistant_indices = []
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
+                last_assistant_indices.append(i)
+                if len(last_assistant_indices) >= 2:  # 保护最后 2 条 assistant 消息
+                    break
+
+        protected_indices = set(last_assistant_indices)
+        log.debug(
+            f"[SANITIZER] Protected assistant message indices: {protected_indices}, "
+            f"total_messages={len(messages)}"
+        )
+
         sanitized_messages = []
         current_thinking_signature = last_thought_signature
 
-        for msg in messages:
+        for msg_idx, msg in enumerate(messages):
             role = msg.get("role")
             content = msg.get("content")
 
@@ -174,6 +202,9 @@ class AnthropicSanitizer:
                 # 非 assistant 消息或非列表内容,直接保留
                 sanitized_messages.append(msg)
                 continue
+
+            # 判断是否为受保护的最新消息
+            is_protected = msg_idx in protected_indices
 
             # 处理 assistant 消息的 content blocks
             new_content = []
@@ -188,41 +219,91 @@ class AnthropicSanitizer:
                 if block_type in ("thinking", "redacted_thinking"):
                     self.stats["thinking_blocks_validated"] += 1
 
-                    # 验证签名
-                    is_valid, recovered_signature = self._validate_thinking_block(
-                        block,
-                        session_id=session_id,
-                        context_signature=current_thinking_signature
-                    )
+                    if is_protected:
+                        # ================================================================
+                        # 最新消息：尝试签名恢复
+                        # ================================================================
+                        # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
+                        is_valid, recovered_signature = self._validate_thinking_block(
+                            block,
+                            session_id=session_id,
+                            context_signature=current_thinking_signature,
+                            owner_id=owner_id
+                        )
 
-                    if is_valid:
-                        # 签名有效,清理额外字段后保留
-                        sanitized_block = sanitize_thinking_block(block)
-                        new_content.append(sanitized_block)
+                        if is_valid:
+                            # 签名有效,清理额外字段后保留
+                            sanitized_block = sanitize_thinking_block(block)
+                            new_content.append(sanitized_block)
 
-                        # 更新当前 thinking 签名
-                        if recovered_signature:
-                            current_thinking_signature = recovered_signature
+                            # 更新当前 thinking 签名
+                            if recovered_signature:
+                                current_thinking_signature = recovered_signature
+                        else:
+                            # 签名无效且无法恢复,降级为 text block
+                            downgraded_block = self._downgrade_thinking_to_text(block)
+                            if downgraded_block:
+                                new_content.append(downgraded_block)
+                            self.stats["thinking_blocks_downgraded"] += 1
                     else:
-                        # 签名无效且无法恢复,降级为 text block
-                        downgraded_block = self._downgrade_thinking_to_text(block)
-                        if downgraded_block:
-                            new_content.append(downgraded_block)
-                        self.stats["thinking_blocks_downgraded"] += 1
+                        # ================================================================
+                        # [FIX 2026-01-21] 历史消息：也尝试签名恢复，而不是直接删除
+                        # 原来的注释说 "历史 thinking blocks 的签名已失效" 是错误理解
+                        # 实际上：signature 是用于验证 thinking 内容完整性的，
+                        # 只要 signature + thinking 内容匹配，任何请求都可以使用
+                        # ================================================================
+                        # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
+                        is_valid, recovered_signature = self._validate_thinking_block(
+                            block,
+                            session_id=session_id,
+                            context_signature=current_thinking_signature,
+                            owner_id=owner_id
+                        )
+
+                        if is_valid:
+                            # 签名有效,保留
+                            sanitized_block = sanitize_thinking_block(block)
+                            new_content.append(sanitized_block)
+                            self.stats["thinking_blocks_recovered"] += 1
+                            log.debug(
+                                f"[SANITIZER] 历史 thinking block 签名恢复成功: "
+                                f"msg_idx={msg_idx}, thinking_len={len(block.get('thinking', ''))}"
+                            )
+                            # 更新当前 thinking 签名
+                            if recovered_signature:
+                                current_thinking_signature = recovered_signature
+                        else:
+                            # 签名无效且无法恢复，降级为 text block（而不是直接删除）
+                            downgraded_block = self._downgrade_thinking_to_text(block)
+                            if downgraded_block:
+                                new_content.append(downgraded_block)
+                            self.stats["thinking_blocks_downgraded"] += 1
+                            log.debug(
+                                f"[SANITIZER] 历史 thinking block 签名恢复失败，降级为 text: "
+                                f"msg_idx={msg_idx}, thinking_len={len(block.get('thinking', ''))}"
+                            )
 
                 # 处理 tool_use block
                 elif block_type == "tool_use":
                     # tool_use 也需要签名恢复
+                    # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
                     recovered_block = self._recover_tool_use_signature(
                         block,
                         session_id=session_id,
-                        context_signature=current_thinking_signature
+                        context_signature=current_thinking_signature,
+                        owner_id=owner_id
                     )
                     new_content.append(recovered_block)
 
                 else:
                     # 其他类型的 block 直接保留
                     new_content.append(block)
+
+            # 如果过滤后 content 为空，添加一个空 text block 保持消息有效
+            # 参考 Antigravity-Manager: 如果消息只有 thinking block，替换为 placeholder
+            if not new_content:
+                new_content = [{"type": "text", "text": "..."}]
+                log.debug(f"[SANITIZER] Replaced empty assistant message with placeholder: msg_idx={msg_idx}")
 
             # 更新消息的 content
             sanitized_msg = msg.copy()
@@ -235,7 +316,8 @@ class AnthropicSanitizer:
         self,
         block: Dict,
         session_id: Optional[str] = None,
-        context_signature: Optional[str] = None
+        context_signature: Optional[str] = None,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
     ) -> Tuple[bool, Optional[str]]:
         """
         验证单个 thinking block
@@ -249,6 +331,7 @@ class AnthropicSanitizer:
             block: thinking block 字典
             session_id: 会话ID (可选)
             context_signature: 上下文签名 (可选)
+            owner_id: 可选的所有者ID，用于多客户端会话隔离
 
         Returns:
             (is_valid, recovered_signature)
@@ -266,12 +349,14 @@ class AnthropicSanitizer:
         client_signature = block.get("thoughtSignature")
 
         try:
+            # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
             recovery_result = recover_signature_for_thinking(
                 thinking_text=thinking_text,
                 client_signature=client_signature,
                 context_signature=context_signature,
                 session_id=session_id,
-                use_placeholder_fallback=False  # 不使用占位符,降级为 text
+                use_placeholder_fallback=False,  # 不使用占位符,降级为 text
+                owner_id=owner_id
             )
 
             if recovery_result.signature and is_valid_signature(recovery_result.signature):
@@ -332,7 +417,8 @@ class AnthropicSanitizer:
         self,
         block: Dict,
         session_id: Optional[str] = None,
-        context_signature: Optional[str] = None
+        context_signature: Optional[str] = None,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
     ) -> Dict:
         """
         恢复 tool_use block 的签名
@@ -341,6 +427,7 @@ class AnthropicSanitizer:
             block: tool_use block 字典
             session_id: 会话ID
             context_signature: 上下文签名
+            owner_id: 可选的所有者ID，用于多客户端会话隔离
 
         Returns:
             处理后的 tool_use block
@@ -352,13 +439,15 @@ class AnthropicSanitizer:
         original_id, encoded_signature = decode_tool_id_and_signature(tool_id)
 
         try:
+            # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
             recovery_result = recover_signature_for_tool_use(
                 tool_id=original_id,
                 encoded_tool_id=tool_id,
                 client_signature=client_signature,
                 context_signature=context_signature,
                 session_id=session_id,
-                use_placeholder_fallback=True  # tool_use 可以使用占位符
+                use_placeholder_fallback=True,  # tool_use 可以使用占位符
+                owner_id=owner_id
             )
 
             if recovery_result.signature:
@@ -392,20 +481,33 @@ class AnthropicSanitizer:
         """
         确保 tool_use/tool_result 链条完整
 
+        [FIX 2026-01-20] 不仅检测，还要修复断裂的工具链
+
         检查规则:
         1. 每个 tool_use 必须有对应的 tool_result
-        2. tool_result 必须紧跟在对应的 tool_use 之后
-        3. 如果链条断裂,记录警告但不修复 (修复逻辑由其他模块负责)
+        2. 如果发现孤儿 tool_use (没有对应的 tool_result), 将其过滤掉
+
+        这是 P0 Critical Fix: 防止 Claude API 返回 400 错误:
+        "tool_use ids were found without tool_result blocks immediately after"
+
+        场景: Cursor 重试时可能发送不完整的历史消息:
+        - tool_use 块存在
+        - 但对应的 tool_result 块被过滤掉了
 
         Args:
             messages: 消息列表
 
         Returns:
-            消息列表 (当前版本不修改,仅验证)
+            修复后的消息列表
         """
+        if not messages:
+            return messages
+
         # 收集所有 tool_use 和 tool_result
-        tool_uses = {}  # tool_id -> message_index
-        tool_results = {}  # tool_id -> message_index
+        # [FIX 2026-01-20] 使用解码后的原始ID作为key，确保与tool_result匹配
+        # tool_id 可能包含编码的签名，需要解码获取原始ID
+        tool_uses = {}  # original_tool_id -> (message_index, encoded_tool_id)
+        tool_results = set()  # original_tool_use_id 集合
 
         for msg_idx, msg in enumerate(messages):
             content = msg.get("content")
@@ -418,31 +520,72 @@ class AnthropicSanitizer:
 
                 block_type = block.get("type")
                 if block_type == "tool_use":
-                    tool_id = block.get("id")
-                    if tool_id:
-                        tool_uses[tool_id] = msg_idx
+                    encoded_tool_id = block.get("id")
+                    if encoded_tool_id:
+                        # 解码 tool_id (可能包含编码的签名)
+                        original_id, _ = decode_tool_id_and_signature(encoded_tool_id)
+                        tool_uses[original_id] = (msg_idx, encoded_tool_id)
                 elif block_type == "tool_result":
-                    tool_use_id = block.get("tool_use_id")
-                    if tool_use_id:
-                        tool_results[tool_use_id] = msg_idx
+                    encoded_tool_use_id = block.get("tool_use_id")
+                    if encoded_tool_use_id:
+                        # 解码 tool_use_id
+                        original_id, _ = decode_tool_id_and_signature(encoded_tool_use_id)
+                        tool_results.add(original_id)
 
-        # 检查完整性
-        broken_chains = []
-        for tool_id in tool_uses:
-            if tool_id not in tool_results:
-                broken_chains.append(tool_id)
+        # 找出孤儿 tool_use (没有对应 tool_result)
+        # 使用解码后的原始ID进行匹配
+        orphan_tool_uses = {}  # original_id -> encoded_id (用于过滤时匹配)
+        for original_id, (msg_idx, encoded_id) in tool_uses.items():
+            if original_id not in tool_results:
+                orphan_tool_uses[encoded_id] = original_id
 
-        if broken_chains:
-            log.warning(
-                f"[SANITIZER] 检测到断裂的工具调用链: "
-                f"broken_count={len(broken_chains)}, "
-                f"tool_ids={broken_chains[:3]}..."  # 只显示前3个
-            )
-            self.stats["tool_chains_fixed"] += len(broken_chains)
+        if not orphan_tool_uses:
+            # 工具链完整, 无需修复
+            return messages
 
-        # 当前版本不修复,仅记录
-        # 修复逻辑由 tool_loop_recovery 模块负责
-        return messages
+        log.warning(
+            f"[SANITIZER] 检测到孤儿 tool_use: {len(orphan_tool_uses)} 个, "
+            f"将过滤以避免 Claude API 400 错误. "
+            f"tool_ids={list(orphan_tool_uses.values())[:3]}..."
+        )
+        self.stats["tool_chains_fixed"] += len(orphan_tool_uses)
+
+        # 过滤掉孤儿 tool_use
+        cleaned_messages = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                cleaned_messages.append(msg)
+                continue
+
+            new_content = []
+            has_orphan = False
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    encoded_tool_id = block.get("id")
+                    if encoded_tool_id and encoded_tool_id in orphan_tool_uses:
+                        original_id = orphan_tool_uses[encoded_tool_id]
+                        log.info(f"[SANITIZER] 过滤孤儿 tool_use: {original_id} (encoded: {encoded_tool_id[:20]}...)")
+                        has_orphan = True
+                        continue
+                new_content.append(block)
+
+            # 如果过滤后 content 为空, 添加一个占位符文本块
+            if not new_content and has_orphan:
+                new_content = [{"type": "text", "text": "..."}]
+
+            if new_content:
+                new_msg = msg.copy()
+                new_msg["content"] = new_content
+                cleaned_messages.append(new_msg)
+
+        log.info(
+            f"[SANITIZER] 工具链修复完成: "
+            f"原始消息={len(messages)}, 修复后={len(cleaned_messages)}, "
+            f"过滤的 tool_use={len(orphan_tool_uses)}"
+        )
+
+        return cleaned_messages
 
     def _sync_thinking_config(
         self,

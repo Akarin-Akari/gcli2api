@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,13 @@ from src.converters.thoughtSignature_fix import (
     filter_invalid_thinking_blocks,
     MIN_SIGNATURE_LENGTH,
     SKIP_SIGNATURE_VALIDATOR,
+)
+# [FIX 2026-01-21] 导入跨模型 thinking 隔离函数
+from src.converters.model_config import (
+    is_claude_model,
+    is_gemini_model,
+    get_model_family,
+    should_preserve_thinking_for_model,
 )
 
 
@@ -429,14 +437,15 @@ def recover_signature_for_tool_use(
     encoded_tool_id: str,
     signature: Optional[str],
     last_thought_signature: Optional[str],
-    session_id: Optional[str] = None
+    session_id: Optional[str] = None,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 ) -> Optional[str]:
     """
     多层签名恢复策略（用于工具调用）- 6层完整实现
-    
+
     ⚠️ 注意：此函数是旧版本的兼容包装，内部调用新版本的 recover_signature_for_tool_use
     新版本位于 converters.signature_recovery，返回 RecoveryResult 提供更详细信息
-    
+
     优先级：
     1. 客户端提供的签名
     2. 上下文中的签名
@@ -446,17 +455,18 @@ def recover_signature_for_tool_use(
     6. 最近签名（fallback）
     """
     from src.converters.signature_recovery import recover_signature_for_tool_use as recover_tool_sig
-    
-    # 调用新版本的恢复函数
+
+    # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
     result = recover_tool_sig(
         tool_id=tool_id,
         encoded_tool_id=encoded_tool_id,
         client_signature=signature,
         context_signature=last_thought_signature,
         session_id=session_id,
-        use_placeholder_fallback=True  # 允许使用占位符作为 fallback
+        use_placeholder_fallback=True,  # 允许使用占位符作为 fallback
+        owner_id=owner_id
     )
-    
+
     # 返回签名（兼容旧版本接口）
     return result.signature
 
@@ -508,6 +518,258 @@ def _extract_tool_result_output(content: Any) -> str:
     return str(content)
 
 
+def _validate_and_fix_tool_chain(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    验证并修复工具调用链的完整性
+
+    检查规则:
+    1. 每个 tool_use 必须有对应的 tool_result
+    2. 如果发现孤儿 tool_use (没有对应的 tool_result), 将其过滤掉
+
+    这是 P0 Critical Fix: 防止 Claude API 返回 400 错误:
+    "tool_use ids were found without tool_result blocks immediately after"
+
+    场景: Cursor 重试时可能发送不完整的历史消息:
+    - tool_use 块存在
+    - 但对应的 tool_result 块被过滤掉了 (因为 thinking 被禁用)
+
+    Args:
+        messages: Anthropic 格式的消息列表
+
+    Returns:
+        修复后的消息列表
+    """
+    if not messages:
+        return messages
+
+    # 收集所有 tool_use 和 tool_result
+    tool_uses = {}  # tool_id -> message_index
+    tool_results = set()  # tool_use_id 集合
+
+    for msg_idx, msg in enumerate(messages):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+
+            block_type = block.get("type")
+            if block_type == "tool_use":
+                tool_id = block.get("id")
+                if tool_id:
+                    # 解码 tool_id (可能包含编码的签名)
+                    original_id, _ = decode_tool_id_and_signature(tool_id)
+                    tool_uses[original_id] = msg_idx
+            elif block_type == "tool_result":
+                tool_use_id = block.get("tool_use_id")
+                if tool_use_id:
+                    # 解码 tool_use_id
+                    original_id, _ = decode_tool_id_and_signature(tool_use_id)
+                    tool_results.add(original_id)
+
+    # 找出孤儿 tool_use (没有对应 tool_result)
+    orphan_tool_uses = []
+    for tool_id in tool_uses:
+        if tool_id not in tool_results:
+            orphan_tool_uses.append(tool_id)
+
+    if not orphan_tool_uses:
+        # 工具链完整, 无需修复
+        return messages
+
+    log.warning(
+        f"[ANTHROPIC CONVERTER] 检测到孤儿 tool_use: {len(orphan_tool_uses)} 个, "
+        f"将过滤以避免 Claude API 400 错误"
+    )
+
+    # 过滤掉孤儿 tool_use
+    cleaned_messages = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            cleaned_messages.append(msg)
+            continue
+
+        new_content = []
+        has_orphan = False
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                tool_id = block.get("id")
+                if tool_id:
+                    original_id, _ = decode_tool_id_and_signature(tool_id)
+                    if original_id in orphan_tool_uses:
+                        log.info(f"[ANTHROPIC CONVERTER] 过滤孤儿 tool_use: {original_id}")
+                        has_orphan = True
+                        continue
+            new_content.append(block)
+
+        # 如果过滤后 content 为空, 添加一个占位符文本块
+        if not new_content and has_orphan:
+            new_content = [{"type": "text", "text": "..."}]
+
+        if new_content:
+            new_msg = msg.copy()
+            new_msg["content"] = new_content
+            cleaned_messages.append(new_msg)
+
+    log.info(
+        f"[ANTHROPIC CONVERTER] 工具链修复完成: "
+        f"原始消息={len(messages)}, 修复后={len(cleaned_messages)}, "
+        f"过滤的 tool_use={len(orphan_tool_uses)}"
+    )
+
+    return cleaned_messages
+
+
+# ==================== [FIX 2026-01-21] 跨模型 Thinking 隔离 ====================
+#
+# 问题描述：
+# 当模型路由波动（Claude → Gemini → Claude）时，Gemini 返回的 thinking 块没有
+# 有效的 signature，这会污染会话状态，导致后续 Claude 请求的 thinking 被禁用。
+#
+# 解决方案：
+# 在消息处理之前，根据目标模型过滤掉不兼容的 thinking 块。
+# - Claude → Claude: 保留 thinking（需要 signature 验证）
+# - Claude → Gemini: 移除 thinking（Gemini 不需要历史 thinking）
+# - Gemini → Claude: 移除 thinking（Gemini thinking 没有 signature，会导致 Claude 400）
+# - Gemini → Gemini: 移除 thinking（Gemini 也不使用历史 thinking）
+#
+# Author: Claude Opus 4.5 (浮浮酱)
+# Date: 2026-01-21
+# ============================================================================
+
+
+def filter_thinking_for_target_model(
+    messages: List[Dict[str, Any]],
+    target_model: str,
+    *,
+    last_model: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    根据目标模型过滤消息中的 thinking 块
+
+    这是解决跨模型 thinking 污染问题的关键函数。当用户在同一对话中切换模型时，
+    需要过滤掉不兼容的 thinking 块，避免：
+    1. Gemini 的无签名 thinking 污染 Claude 请求（导致 400 错误）
+    2. Claude 的 thinking 块发送给 Gemini（浪费 tokens，Gemini 不使用）
+
+    Args:
+        messages: Anthropic 格式的消息列表
+        target_model: 当前请求的目标模型
+        last_model: 上一次请求使用的模型（可选，用于更精确的过滤）
+
+    Returns:
+        过滤后的消息列表（深拷贝，不修改原始数据）
+
+    Examples:
+        >>> # Claude → Claude: 保留 thinking
+        >>> messages = [{"role": "assistant", "content": [{"type": "thinking", ...}]}]
+        >>> filtered = filter_thinking_for_target_model(messages, "claude-opus-4-5")
+        >>> len(filtered[0]["content"])  # thinking 被保留
+        1
+
+        >>> # Gemini → Claude: 移除 thinking
+        >>> messages = [{"role": "assistant", "content": [{"type": "thinking", ...}]}]
+        >>> filtered = filter_thinking_for_target_model(messages, "claude-opus-4-5", last_model="gemini-3-pro-high")
+        >>> len(filtered[0]["content"])  # thinking 被移除
+        0
+    """
+    if not messages:
+        return messages
+
+    target_family = get_model_family(target_model)
+
+    # 统计信息
+    stats = {
+        "total_thinking_blocks": 0,
+        "preserved": 0,
+        "filtered": 0,
+        "filtered_reasons": []
+    }
+
+    filtered_messages: List[Dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        # 只处理 assistant 消息中的 thinking 块
+        if role != "assistant" or not isinstance(content, list):
+            filtered_messages.append(msg)
+            continue
+
+        # 过滤 content 中的 thinking 块
+        new_content: List[Dict[str, Any]] = []
+        for item in content:
+            if not isinstance(item, dict):
+                new_content.append(item)
+                continue
+
+            item_type = item.get("type", "")
+
+            # 处理 thinking 和 redacted_thinking 块
+            if item_type in ("thinking", "redacted_thinking"):
+                stats["total_thinking_blocks"] += 1
+
+                # 检查是否有有效的 signature
+                signature = item.get("signature", "")
+                has_valid_sig = signature and len(signature) >= MIN_SIGNATURE_LENGTH
+
+                # 决策逻辑
+                should_preserve = False
+                filter_reason = None
+
+                if target_family == "claude":
+                    # Claude 需要有效的 signature
+                    if has_valid_sig:
+                        should_preserve = True
+                    else:
+                        filter_reason = "no_valid_signature_for_claude"
+                elif target_family == "gemini":
+                    # Gemini 不使用历史 thinking，全部过滤
+                    filter_reason = "gemini_ignores_thinking"
+                else:
+                    # 其他模型，保守起见过滤掉
+                    filter_reason = "unknown_model_family"
+
+                if should_preserve:
+                    new_content.append(item)
+                    stats["preserved"] += 1
+                else:
+                    stats["filtered"] += 1
+                    stats["filtered_reasons"].append(filter_reason)
+                    log.debug(
+                        f"[THINKING FILTER] 过滤 thinking 块: "
+                        f"type={item_type}, reason={filter_reason}, "
+                        f"has_sig={has_valid_sig}, target={target_model}"
+                    )
+            else:
+                # 非 thinking 块，保留
+                new_content.append(item)
+
+        # 创建新消息（如果 content 有变化）
+        if len(new_content) != len(content):
+            new_msg = msg.copy()
+            new_msg["content"] = new_content
+            filtered_messages.append(new_msg)
+        else:
+            filtered_messages.append(msg)
+
+    # 记录统计日志
+    if stats["total_thinking_blocks"] > 0:
+        log.info(
+            f"[THINKING FILTER] 跨模型 thinking 过滤完成: "
+            f"target={target_model} ({target_family}), "
+            f"total={stats['total_thinking_blocks']}, "
+            f"preserved={stats['preserved']}, "
+            f"filtered={stats['filtered']}"
+        )
+
+    return filtered_messages
+
+
 def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thinking: bool = True) -> List[Dict[str, Any]]:
     """
     将 Anthropic messages[] 转换为下游 contents[]（role: user/model, parts: []）。
@@ -519,16 +781,39 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
     contents: List[Dict[str, Any]] = []
 
     # [FIX 2026-01-17] 生成会话指纹用于 Session Cache
+    # [FIX 2026-01-20] 添加详细诊断日志，用于调试 session_id 变化问题
     session_id: Optional[str] = None
     try:
         from src.signature_cache import generate_session_fingerprint
         session_id = generate_session_fingerprint(messages)
         if session_id:
-            log.debug(f"[ANTHROPIC CONVERTER] Generated session_id: {session_id[:16]}...")
+            log.info(f"[SESSION MONITOR] session_id={session_id}, msg_count={len(messages)}")
     except ImportError:
         log.debug("[ANTHROPIC CONVERTER] Session fingerprint generation not available")
     except Exception as e:
         log.warning(f"[ANTHROPIC CONVERTER] Failed to generate session_id: {e}")
+
+    # [FIX 2026-01-20] 统计消息中的 thinking 块数量（诊断用）
+    thinking_block_stats = {"total": 0, "with_signature": 0, "without_signature": 0}
+    for msg in messages:
+        raw_content = msg.get("content", "")
+        if isinstance(raw_content, list):
+            for item in raw_content:
+                if isinstance(item, dict) and item.get("type") == "thinking":
+                    thinking_block_stats["total"] += 1
+                    if item.get("signature"):
+                        thinking_block_stats["with_signature"] += 1
+                    else:
+                        thinking_block_stats["without_signature"] += 1
+
+    if thinking_block_stats["total"] > 0:
+        log.info(
+            f"[THINKING MONITOR] 请求统计: "
+            f"msg_count={len(messages)}, "
+            f"thinking_blocks={thinking_block_stats['total']}, "
+            f"with_sig={thinking_block_stats['with_signature']}, "
+            f"without_sig={thinking_block_stats['without_signature']}"
+        )
 
     # 第一遍：建立 tool_use_id -> name 的映射
     # Anthropic 的 tool_result 消息不包含 name 字段，但 Gemini 的 functionResponse 需要 name
@@ -582,19 +867,29 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
                         thinking_text = ""
                     message_signature = item.get("signature", "")
 
+                    # [FIX 2026-01-20] Thinking Block 日志监控（详细记录接收状态）
+                    log.info(
+                        f"[THINKING MONITOR] 收到 thinking 块: "
+                        f"thinking_len={len(thinking_text)}, "
+                        f"has_signature={bool(message_signature)}, "
+                        f"signature_len={len(message_signature) if message_signature else 0}"
+                    )
+
                     # [FIX 2026-01-16] 多层签名恢复策略
-                    # 优先级: 缓存签名 -> 消息签名(如果有效) -> 最近签名(fallback) -> 跳过
+                    # 优先级: 缓存签名 -> 消息签名(如果有效) -> 降级为 text
+                    # [FIX 2026-01-20] 移除"替换文本"的 fallback 策略，避免上下文错乱
                     from src.signature_cache import get_cached_signature, get_last_signature
 
                     if thinking_text:
                         final_signature = None
                         recovery_source = None
 
-                        # 优先级 1: 从缓存恢复
+                        # 优先级 1: 从缓存恢复（精确匹配）
                         cached_signature = get_cached_signature(thinking_text)
                         if cached_signature:
                             final_signature = cached_signature
                             recovery_source = "cache"
+                            log.debug(f"[THINKING MONITOR] 签名恢复成功 (cache): sig_len={len(cached_signature)}")
 
                         # 优先级 2: 如果缓存未命中，检查消息提供的签名是否有效
                         if not final_signature and message_signature and len(message_signature) >= MIN_SIGNATURE_LENGTH:
@@ -602,22 +897,13 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
                             # 只有在缓存完全未命中时才考虑使用
                             final_signature = message_signature
                             recovery_source = "message"
-                            log.info(f"[ANTHROPIC CONVERTER] 缓存未命中，使用消息签名（可能有风险）: thinking_len={len(thinking_text)}")
+                            log.info(f"[THINKING MONITOR] 缓存未命中，使用消息签名: thinking_len={len(thinking_text)}, sig_len={len(message_signature)}")
 
-                        # 优先级 3: 使用最近缓存的签名和配对文本（fallback）
-                        # [FIX 2026-01-17] 关键修复：必须同时获取 signature 和配对的 thinking_text
-                        # 否则会导致 signature 与 thinking_text 不匹配，触发 400 错误
-                        if not final_signature:
-                            from src.signature_cache import get_last_signature_with_text
-                            last_result = get_last_signature_with_text()
-                            if last_result:
-                                final_signature, cached_thinking_text = last_result
-                                original_thinking_len = len(thinking_text) if thinking_text else 0
-                                # 关键：使用缓存的 thinking_text 替换当前的，确保与 signature 匹配
-                                thinking_text = cached_thinking_text
-                                recovery_source = "last_cached_with_text"
-                                log.info(f"[ANTHROPIC CONVERTER] 使用最近缓存的签名和配对文本（fallback）: "
-                                        f"original_len={original_thinking_len}, cached_len={len(thinking_text)}")
+                        # [FIX 2026-01-20] 移除优先级 3（替换文本策略）
+                        # 原策略：使用最近缓存的签名和配对文本，但会替换当前 thinking_text
+                        # 问题：替换文本可能导致上下文错乱，模型看到的是旧的 thinking 内容
+                        # 新策略：如果前两层都未命中，直接降级为普通 text 块，保留原始内容
+                        # 这样既不会触发 API signature 验证错误，又保持了上下文连贯性
 
                         # 如果成功恢复签名，添加 thinking block
                         if final_signature:
@@ -628,6 +914,14 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
                             }
                             parts.append(part)
 
+                            # [FIX 2026-01-20] 详细日志：签名恢复成功
+                            log.info(
+                                f"[THINKING MONITOR] 签名恢复成功: "
+                                f"source={recovery_source}, "
+                                f"thinking_len={len(thinking_text)}, "
+                                f"sig_len={len(final_signature)}"
+                            )
+
                             # [FIX 2026-01-17] 缓存思维块签名 (P0 Critical Fix)
                             # 只缓存来自消息的签名，不缓存fallback签名（避免污染）
                             if recovery_source == "message":
@@ -637,30 +931,31 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
                                     # [FIX 2026-01-17] 同时缓存到 Session Cache
                                     if session_id:
                                         cache_session_signature(session_id, final_signature, thinking_text)
-                                    log.debug(f"[ANTHROPIC CONVERTER] Cached thinking signature from message: thinking_len={len(thinking_text)}")
+                                    log.debug(f"[THINKING MONITOR] 已缓存消息签名: thinking_len={len(thinking_text)}")
                                 except Exception as e:
-                                    log.warning(f"[SIGNATURE_CACHE] 思维块签名缓存失败: {e}")
+                                    log.warning(f"[THINKING MONITOR] 思维块签名缓存失败: {e}")
 
                             # [FIX 2026-01-17] 保存当前消息的 thinking 签名，用于同一消息中的 tool_use 块
                             # 这是关键修复：Claude 的 thinking 块和 tool_use 块在同一个 assistant 消息中
                             current_msg_thinking_signature = final_signature
                             last_thinking_signature = final_signature
-                            log.debug(f"[ANTHROPIC CONVERTER] Saved thinking signature for tool_use recovery: sig_len={len(final_signature)}")
-
-                            if recovery_source == "cache":
-                                if message_signature and message_signature != cached_signature:
-                                    log.info(f"[ANTHROPIC CONVERTER] 使用缓存 signature 替代消息 signature: thinking_len={len(thinking_text)}")
-                                else:
-                                    log.debug(f"[ANTHROPIC CONVERTER] 使用缓存 signature: thinking_len={len(thinking_text)}")
                         else:
-                            # [FIX 2026-01-17] 所有恢复策略都失败，降级为 text 块而不是跳过
-                            # 参考 Antigravity-Manager v3.3.35 的实现
+                            # [FIX 2026-01-20] 改进的降级策略：直接降级为 text 块，保留原始内容
+                            # 不再使用"替换文本"的 fallback 策略，避免上下文错乱
                             if thinking_text and thinking_text.strip():
-                                parts.append({"text": f"[Previous thinking: {thinking_text}]"})
-                                log.info(f"[ANTHROPIC CONVERTER] Thinking block 签名恢复失败，降级为 text: "
-                                         f"thinking_len={len(thinking_text)}")
+                                parts.append({"text": f"[Thinking: {thinking_text}]"})
+                                # [FIX 2026-01-20] 详细诊断日志：帮助定位签名丢失原因
+                                thinking_hash = hashlib.md5(thinking_text.encode('utf-8')).hexdigest()[:16] if thinking_text else "N/A"
+                                log.warning(
+                                    f"[THINKING MONITOR] 签名恢复失败，降级为 text 块: "
+                                    f"session_id={session_id or 'N/A'}, "
+                                    f"thinking_hash={thinking_hash}, "
+                                    f"thinking_len={len(thinking_text)}, "
+                                    f"msg_sig_len={len(message_signature) if message_signature else 0}, "
+                                    f"原因=cache_miss+msg_sig_invalid"
+                                )
                             else:
-                                log.warning(f"[ANTHROPIC CONVERTER] Thinking block 所有恢复策略失败且内容为空，跳过此 block")
+                                log.warning(f"[THINKING MONITOR] 跳过空 thinking 块")
                 elif item_type == "redacted_thinking":
                     # 如果请求未启用 thinking，则跳过历史 redacted_thinking 块
                     if not include_thinking:
@@ -672,39 +967,37 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
                         thinking_text = item.get("data", "")
                     message_signature = item.get("signature", "")
 
+                    # [FIX 2026-01-20] Redacted Thinking Block 日志监控
+                    log.info(
+                        f"[THINKING MONITOR] 收到 redacted_thinking 块: "
+                        f"thinking_len={len(thinking_text) if thinking_text else 0}, "
+                        f"has_signature={bool(message_signature)}, "
+                        f"signature_len={len(message_signature) if message_signature else 0}"
+                    )
+
                     # [FIX 2026-01-16] 多层签名恢复策略（与 thinking 块相同）
+                    # [FIX 2026-01-20] 移除"替换文本"的 fallback 策略，避免上下文错乱
                     from src.signature_cache import get_cached_signature, get_last_signature
 
                     if thinking_text:
                         final_signature = None
                         recovery_source = None
 
-                        # 优先级 1: 从缓存恢复
+                        # 优先级 1: 从缓存恢复（精确匹配）
                         cached_signature = get_cached_signature(thinking_text)
                         if cached_signature:
                             final_signature = cached_signature
                             recovery_source = "cache"
+                            log.debug(f"[THINKING MONITOR] Redacted 签名恢复成功 (cache): sig_len={len(cached_signature)}")
 
                         # 优先级 2: 如果缓存未命中，检查消息提供的签名是否有效
                         if not final_signature and message_signature and len(message_signature) >= MIN_SIGNATURE_LENGTH:
                             final_signature = message_signature
                             recovery_source = "message"
-                            log.info(f"[ANTHROPIC CONVERTER] Redacted 缓存未命中，使用消息签名（可能有风险）: thinking_len={len(thinking_text)}")
+                            log.info(f"[THINKING MONITOR] Redacted 缓存未命中，使用消息签名: thinking_len={len(thinking_text)}, sig_len={len(message_signature)}")
 
-                        # 优先级 3: 使用最近缓存的签名和配对文本（fallback）
-                        # [FIX 2026-01-17] 关键修复：必须同时获取 signature 和配对的 thinking_text
-                        # 否则会导致 signature 与 thinking_text 不匹配，触发 400 错误
-                        if not final_signature:
-                            from src.signature_cache import get_last_signature_with_text
-                            last_result = get_last_signature_with_text()
-                            if last_result:
-                                final_signature, cached_thinking_text = last_result
-                                original_thinking_len = len(thinking_text) if thinking_text else 0
-                                # 关键：使用缓存的 thinking_text 替换当前的，确保与 signature 匹配
-                                thinking_text = cached_thinking_text
-                                recovery_source = "last_cached_with_text"
-                                log.info(f"[ANTHROPIC CONVERTER] Redacted 使用最近缓存的签名和配对文本（fallback）: "
-                                        f"original_len={original_thinking_len}, cached_len={len(thinking_text)}")
+                        # [FIX 2026-01-20] 移除优先级 3（替换文本策略）
+                        # 与 thinking 块保持一致的策略
 
                         # 如果成功恢复签名，添加 redacted_thinking block
                         if final_signature:
@@ -716,30 +1009,34 @@ def convert_messages_to_contents(messages: List[Dict[str, Any]], *, include_thin
                                 }
                             )
 
+                            # [FIX 2026-01-20] 详细日志：签名恢复成功
+                            log.info(
+                                f"[THINKING MONITOR] Redacted 签名恢复成功: "
+                                f"source={recovery_source}, "
+                                f"thinking_len={len(thinking_text)}, "
+                                f"sig_len={len(final_signature)}"
+                            )
+
                             # [FIX 2026-01-17] 缓存 redacted_thinking 块签名 (P0 Critical Fix)
                             # 只缓存来自消息的签名，不缓存fallback签名（避免污染）
                             if recovery_source == "message":
                                 from src.signature_cache import cache_signature
                                 try:
                                     cache_signature(thinking_text, final_signature)
-                                    log.debug(f"[ANTHROPIC CONVERTER] Cached redacted_thinking signature from message: thinking_len={len(thinking_text)}")
+                                    log.debug(f"[THINKING MONITOR] 已缓存 Redacted 消息签名: thinking_len={len(thinking_text)}")
                                 except Exception as e:
-                                    log.warning(f"[SIGNATURE_CACHE] Redacted思维块签名缓存失败: {e}")
-
-                            if recovery_source == "cache":
-                                if message_signature and message_signature != cached_signature:
-                                    log.info(f"[ANTHROPIC CONVERTER] 使用缓存 signature 替代消息 redacted signature: thinking_len={len(thinking_text)}")
-                                else:
-                                    log.debug(f"[ANTHROPIC CONVERTER] 使用缓存 redacted signature: thinking_len={len(thinking_text)}")
+                                    log.warning(f"[THINKING MONITOR] Redacted 思维块签名缓存失败: {e}")
                         else:
-                            # [FIX 2026-01-17] 所有恢复策略都失败，降级为 text 块而不是跳过
-                            # 参考 Antigravity-Manager v3.3.35 的实现
+                            # [FIX 2026-01-20] 改进的降级策略：直接降级为 text 块，保留原始内容
                             if thinking_text and thinking_text.strip():
-                                parts.append({"text": f"[Previous thinking: {thinking_text}]"})
-                                log.info(f"[ANTHROPIC CONVERTER] Redacted thinking block 签名恢复失败，降级为 text: "
-                                         f"thinking_len={len(thinking_text)}")
+                                parts.append({"text": f"[Redacted Thinking: {thinking_text}]"})
+                                log.warning(
+                                    f"[THINKING MONITOR] Redacted 签名恢复失败，降级为 text 块: "
+                                    f"thinking_len={len(thinking_text)}, "
+                                    f"原因=无有效签名(cache_miss + message_signature_invalid)"
+                                )
                             else:
-                                log.warning(f"[ANTHROPIC CONVERTER] Redacted thinking block 所有恢复策略失败且内容为空，跳过此 block")
+                                log.warning(f"[THINKING MONITOR] 跳过空 redacted_thinking 块")
                 elif item_type == "text":
                     text = item.get("text", "")
                     if _is_non_whitespace_text(text):
@@ -888,10 +1185,21 @@ def reorganize_tool_messages(contents: List[Dict[str, Any]]) -> List[Dict[str, A
 
         if isinstance(part, dict) and "functionCall" in part:
             tool_id = (part.get("functionCall") or {}).get("id")
-            new_contents.append({"role": "model", "parts": [part]})
 
+            # [FIX 2026-01-20] 只有当存在对应的 functionResponse 时才添加 functionCall
+            # 这是 P0 Critical Fix: 防止 Claude API 返回 400 错误:
+            # "tool_use ids were found without tool_result blocks immediately after"
+            # 场景: Cursor 重试时可能发送不完整的历史消息，tool_use 存在但 tool_result 缺失
             if tool_id is not None and str(tool_id) in tool_results:
+                new_contents.append({"role": "model", "parts": [part]})
                 new_contents.append({"role": "user", "parts": [tool_results[str(tool_id)]]})
+            else:
+                # 孤儿 functionCall - 跳过，不添加到输出
+                log.warning(
+                    f"[ANTHROPIC CONVERTER] Skipping orphan functionCall in reorganize_tool_messages: "
+                    f"tool_id={tool_id} has no corresponding functionResponse. "
+                    f"This may happen when conversation was interrupted during tool execution."
+                )
 
             i += 1
             continue
@@ -1187,6 +1495,19 @@ def convert_anthropic_request_to_antigravity_components(payload: Dict[str, Any])
     # [FIX 2026-01-16] 过滤无效的 thinking 块，清理额外字段（如 cache_control）
     # 这是 P1 修复的关键：确保无效签名的 thinking 块不会导致 API 400 错误
     filter_invalid_thinking_blocks(messages)
+
+    # [FIX 2026-01-21] 跨模型 Thinking 隔离
+    # 当用户在同一对话中切换模型时（如 Claude → Gemini → Claude），
+    # 需要过滤掉不兼容的 thinking 块，避免：
+    # 1. Gemini 的无签名 thinking 污染 Claude 请求（导致 400 错误）
+    # 2. Claude 的 thinking 块发送给 Gemini（浪费 tokens，Gemini 不使用）
+    messages = filter_thinking_for_target_model(messages, model)
+
+    # [FIX 2026-01-20] 验证并修复工具调用链完整性
+    # 这是 P0 Critical Fix: 防止 Claude API 返回 400 错误:
+    # "tool_use ids were found without tool_result blocks immediately after"
+    # 场景: Cursor 重试时可能发送不完整的历史消息
+    messages = _validate_and_fix_tool_chain(messages)
 
     # [FIX 2026-01-17] Tool Loop Recovery - 检测并修复断裂的工具循环
     # 当 Cursor IDE 过滤掉 thinking 块时，工具循环可能断裂

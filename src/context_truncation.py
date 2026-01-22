@@ -15,6 +15,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from log import log
+from src.context_calibrator import get_global_calibrator
 
 # [FIX 2026-01-10] 使用 tiktoken 精确计算 token
 try:
@@ -285,6 +286,20 @@ def estimate_messages_tokens(messages: List[Any]) -> int:
     return total
 
 
+def estimate_messages_tokens_calibrated(messages: List[Any]) -> Tuple[int, int, float]:
+    """
+    使用全局校准器估算消息列表 token 数量
+    
+    Returns:
+        (raw_estimated, calibrated_estimated, factor)
+    """
+    raw = estimate_messages_tokens(messages)
+    calibrator = get_global_calibrator()
+    calibrated = calibrator.calibrate(raw)
+    factor = calibrator.get_factor()
+    return raw, calibrated, factor
+
+
 # ====================== 消息分类 ======================
 
 def classify_messages(messages: List[Any]) -> Dict[str, List[Tuple[int, Any]]]:
@@ -391,7 +406,10 @@ def truncate_messages_smart(
         - stats: 截断统计信息
     """
     original_count = len(messages)
-    original_tokens = estimate_messages_tokens(messages)
+    raw_tokens, calibrated_tokens, factor = estimate_messages_tokens_calibrated(messages)
+    
+    # 使用校准后的 token 数作为压力判断依据
+    original_tokens = calibrated_tokens
     
     # 如果不需要截断，直接返回
     if original_tokens <= target_tokens:
@@ -399,12 +417,19 @@ def truncate_messages_smart(
             "truncated": False,
             "original_count": original_count,
             "final_count": original_count,
-            "original_tokens": original_tokens,
+            "original_tokens": raw_tokens,
             "final_tokens": original_tokens,
             "removed_count": 0,
+            "calibration_factor": factor,
         }
     
-    log.warning(f"[CONTEXT TRUNCATION] Starting truncation: {original_tokens:,} tokens -> target {target_tokens:,} tokens")
+    log.warning(
+        "[CONTEXT TRUNCATION] Starting truncation: raw=%s, calibrated=%s (factor=%.2f) -> target %s tokens",
+        f"{raw_tokens:,}",
+        f"{original_tokens:,}",
+        factor,
+        f"{target_tokens:,}",
+    )
     
     # 分类消息
     classified = classify_messages(messages)
@@ -477,16 +502,19 @@ def truncate_messages_smart(
             truncated.append(messages[i])
     
     # 统计信息
-    final_tokens = estimate_messages_tokens(truncated)
+    final_raw_tokens = estimate_messages_tokens(truncated)
+    _, final_tokens, _ = estimate_messages_tokens_calibrated(truncated)
     stats = {
         "truncated": True,
         "original_count": original_count,
         "final_count": len(truncated),
-        "original_tokens": original_tokens,
+        "original_tokens": raw_tokens,
         "final_tokens": final_tokens,
         "removed_count": original_count - len(truncated),
         "system_kept": len(classified["system"]),
         "tool_context_kept": len([i for i, _ in classified["tool_context"] if i in must_keep_indices]),
+        "final_raw_tokens": final_raw_tokens,
+        "calibration_factor": factor,
     }
     
     log.info(f"[CONTEXT TRUNCATION] Truncation complete: "
@@ -840,6 +868,7 @@ def compress_tool_results_in_messages(
     压缩消息列表中的工具结果
     
     [FIX 2026-01-15] 默认限制从 5K 提升到 200K (AM 兼容)
+    [FIX 2026-01-XX] 添加异常处理，防止压缩失败导致网关500错误
     
     Args:
         messages: OpenAI 格式的消息列表
@@ -856,43 +885,56 @@ def compress_tool_results_in_messages(
     
     for msg in messages:
         # 获取消息属性
-        if hasattr(msg, "role"):
-            role = getattr(msg, "role", "")
-            content = getattr(msg, "content", "")
-            tool_call_id = getattr(msg, "tool_call_id", None)
-        elif isinstance(msg, dict):
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            tool_call_id = msg.get("tool_call_id")
-        else:
-            compressed.append(msg)
-            continue
-        
-        # 只处理工具结果消息
-        if role == "tool" or tool_call_id:
-            if isinstance(content, str) and len(content) > max_result_length:
-                original_len = len(content)
-                compressed_content = compress_tool_result(content, max_result_length)
-                
-                # 创建新消息
-                if hasattr(msg, "role"):
-                    from src.models import OpenAIChatMessage
-                    new_msg = OpenAIChatMessage(
-                        role=role,
-                        content=compressed_content,
-                        tool_call_id=tool_call_id,
-                        name=getattr(msg, "name", None),
-                    )
-                else:
-                    new_msg = msg.copy()
-                    new_msg["content"] = compressed_content
-                
-                compressed.append(new_msg)
-                total_saved += original_len - len(compressed_content)
-                log.debug(f"[TOOL COMPRESS] Compressed tool result: {original_len:,} -> {len(compressed_content):,} chars")
+        try:
+            if hasattr(msg, "role"):
+                role = getattr(msg, "role", "")
+                content = getattr(msg, "content", "")
+                tool_call_id = getattr(msg, "tool_call_id", None)
+            elif isinstance(msg, dict):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                tool_call_id = msg.get("tool_call_id")
+            else:
+                compressed.append(msg)
                 continue
-        
-        compressed.append(msg)
+            
+            # 只处理工具结果消息
+            if role == "tool" or tool_call_id:
+                if isinstance(content, str) and len(content) > max_result_length:
+                    try:
+                        original_len = len(content)
+                        compressed_content = compress_tool_result(content, max_result_length)
+                        
+                        # 创建新消息
+                        if hasattr(msg, "role"):
+                            from src.models import OpenAIChatMessage
+                            new_msg = OpenAIChatMessage(
+                                role=role,
+                                content=compressed_content,
+                                tool_call_id=tool_call_id,
+                                name=getattr(msg, "name", None),
+                            )
+                        else:
+                            new_msg = msg.copy()
+                            new_msg["content"] = compressed_content
+                        
+                        compressed.append(new_msg)
+                        total_saved += original_len - len(compressed_content)
+                        log.debug(f"[TOOL COMPRESS] Compressed tool result: {original_len:,} -> {len(compressed_content):,} chars")
+                        continue
+                    except Exception as compress_err:
+                        # [FIX 2026-01-XX] 压缩失败时记录警告但继续处理，避免导致整个请求失败
+                        log.warning(f"[TOOL COMPRESS] Failed to compress tool result (len={len(content) if isinstance(content, str) else 'N/A'}): {compress_err}. Using original content.", exc_info=True)
+                        # 如果压缩失败，使用原始消息
+                        compressed.append(msg)
+                        continue
+            
+            compressed.append(msg)
+        except Exception as msg_err:
+            # [FIX 2026-01-XX] 处理单个消息时出错，记录警告但继续处理其他消息
+            log.warning(f"[TOOL COMPRESS] Failed to process message: {msg_err}. Skipping message.", exc_info=True)
+            # 如果处理失败，跳过该消息（避免破坏整个消息列表）
+            continue
     
     if total_saved > 0:
         log.info(f"[TOOL COMPRESS] Total saved: {total_saved:,} characters from tool results")
@@ -915,6 +957,8 @@ def truncate_context_for_api(
     1. 先压缩工具结果
     2. 再智能截断消息
     
+    [FIX 2026-01-XX] 添加异常处理，防止压缩/截断失败导致网关500错误
+    
     Args:
         messages: OpenAI 格式的消息列表
         target_tokens: 目标 token 数量
@@ -929,31 +973,56 @@ def truncate_context_for_api(
         "original_tokens": estimate_messages_tokens(messages),
     }
     
-    # Step 1: 压缩工具结果
-    if compress_tools:
-        messages, chars_saved = compress_tool_results_in_messages(messages, tool_max_length)
-        stats["tool_chars_saved"] = chars_saved
-        stats["after_tool_compress_tokens"] = estimate_messages_tokens(messages)
-    
-    # Step 2: 检查是否需要截断
-    current_tokens = estimate_messages_tokens(messages)
-    if current_tokens <= target_tokens:
+    try:
+        # Step 1: 压缩工具结果
+        if compress_tools:
+            try:
+                messages, chars_saved = compress_tool_results_in_messages(messages, tool_max_length)
+                stats["tool_chars_saved"] = chars_saved
+                stats["after_tool_compress_tokens"] = estimate_messages_tokens(messages)
+            except Exception as compress_err:
+                # [FIX 2026-01-XX] 压缩失败时记录警告但继续处理，避免导致整个请求失败
+                log.warning(f"[CONTEXT TRUNCATION] Tool compression failed: {compress_err}. Skipping compression.", exc_info=True)
+                stats["tool_chars_saved"] = 0
+                stats["after_tool_compress_tokens"] = stats["original_tokens"]
+                stats["compression_error"] = str(compress_err)
+        
+        # Step 2: 检查是否需要截断
+        current_tokens = estimate_messages_tokens(messages)
+        if current_tokens <= target_tokens:
+            stats["truncated"] = False
+            stats["final_messages"] = len(messages)
+            stats["final_tokens"] = current_tokens
+            return messages, stats
+        
+        # Step 3: 智能截断
+        try:
+            truncated, truncation_stats = truncate_messages_smart(
+                messages,
+                target_tokens=target_tokens,
+            )
+            
+            stats.update(truncation_stats)
+            stats["final_messages"] = len(truncated)
+            stats["final_tokens"] = estimate_messages_tokens(truncated)
+            
+            return truncated, stats
+        except Exception as truncate_err:
+            # [FIX 2026-01-XX] 截断失败时记录警告但返回原始消息，避免导致整个请求失败
+            log.warning(f"[CONTEXT TRUNCATION] Message truncation failed: {truncate_err}. Using original messages.", exc_info=True)
+            stats["truncated"] = False
+            stats["final_messages"] = len(messages)
+            stats["final_tokens"] = current_tokens
+            stats["truncation_error"] = str(truncate_err)
+            return messages, stats
+    except Exception as e:
+        # [FIX 2026-01-XX] 顶层异常处理：如果整个截断过程失败，返回原始消息
+        log.error(f"[CONTEXT TRUNCATION] Context truncation failed completely: {e}. Using original messages.", exc_info=True)
         stats["truncated"] = False
         stats["final_messages"] = len(messages)
-        stats["final_tokens"] = current_tokens
+        stats["final_tokens"] = stats["original_tokens"]
+        stats["error"] = str(e)
         return messages, stats
-    
-    # Step 3: 智能截断
-    truncated, truncation_stats = truncate_messages_smart(
-        messages,
-        target_tokens=target_tokens,
-    )
-    
-    stats.update(truncation_stats)
-    stats["final_messages"] = len(truncated)
-    stats["final_tokens"] = estimate_messages_tokens(truncated)
-    
-    return truncated, stats
 
 
 # ====================== MAX_TOKENS 重试支持 ======================

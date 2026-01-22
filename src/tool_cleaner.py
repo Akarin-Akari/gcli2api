@@ -250,10 +250,16 @@ CLIENT_PATTERNS: List[Tuple[str, List[str], Optional[str], str]] = [
     ("continue_dev", ["continue/", "continue-dev"], r"continue[/-]?(\d+(?:\.\d+)*)", "Continue.dev"),
     ("zed", ["zed/", "zed-editor"], r"zed[/-]?(\d+(?:\.\d+)*)", "Zed Editor"),
     ("copilot", ["github-copilot", "copilot/"], r"copilot[/-]?(\d+(?:\.\d+)*)", "GitHub Copilot"),
+    # ✅ [FIX 2026-01-22] 添加 Augment Code 检测
+    ("augment", ["augment/", "augment-", "augmentcode"], r"augment[/-]?(\d+(?:\.\d+)*)", "Augment Code"),
+    # ✅ [FIX 2026-01-22] Cursor IDE 使用 Go HTTP 客户端
+    ("cursor", ["go-http-client/"], r"go-http-client[/-]?(\d+(?:\.\d+)*)", "Cursor IDE (Go)"),
 
     # 中优先级：通用关键词（可能误匹配，放在后面）
     ("cursor", ["cursor"], None, "Cursor IDE"),
     ("claude_code", ["claude", "anthropic"], None, "Claude Code"),
+    # ✅ [FIX 2026-01-22] 添加 Augment 通用关键词匹配
+    ("augment", ["augment"], None, "Augment Code"),
 
     # 低优先级：SDK 和通用客户端
     ("openai_api", ["openai-python/", "openai-node/", "openai/"], r"openai[/-]?(\d+(?:\.\d+)*)", "OpenAI SDK"),
@@ -400,28 +406,67 @@ def get_client_info(user_agent: str) -> dict:
         "supports_tools": True,  # 默认支持工具调用
         "supports_streaming": True,  # 默认支持流式响应
         "enable_cross_pool_fallback": False,  # 默认不启用跨池降级
+        # ✅ [FIX 2026-01-22] IDE 客户端增强重试机制
+        # 模仿 Claude Code 的 10 次重试策略，避免 429 错误直接中断会话
+        "max_retry_attempts": 5,  # 默认重试次数
+        "retry_keepalive_seconds": 180,  # 默认长连接保持时间（秒）
+        "is_ide_client": False,  # 是否为 IDE 客户端（需要特殊处理）
     }
 
     # 根据客户端类型设置特定属性
     if client_type == "claude_code":
         info["enable_cross_pool_fallback"] = True
+        info["max_retry_attempts"] = 10  # Claude Code 原生支持 10 次重试
+        info["is_ide_client"] = False  # Claude Code 有自己的重试机制
     elif client_type == "cursor":
-        # Cursor 不启用跨池降级，因为它有自己的 fallback 机制
-        pass
+        # ✅ [FIX 2026-01-22] Cursor 不启用跨池降级，但需要增强重试
+        # Cursor 的 SSE 连接在 429 时会直接中断，需要 gcli2api 代为重试
+        info["max_retry_attempts"] = 10  # 模仿 Claude Code 的 10 次重试
+        info["retry_keepalive_seconds"] = 180  # 保持连接至少 3 分钟
+        info["is_ide_client"] = True
+    elif client_type == "augment":
+        # ✅ [FIX 2026-01-22] Augment Code 同样需要增强重试
+        info["max_retry_attempts"] = 10
+        info["retry_keepalive_seconds"] = 180
+        info["is_ide_client"] = True
     elif client_type == "cline":
         info["enable_cross_pool_fallback"] = True
+        info["max_retry_attempts"] = 10
+        info["is_ide_client"] = True
     elif client_type == "continue_dev":
         info["enable_cross_pool_fallback"] = True
+        info["max_retry_attempts"] = 10
+        info["is_ide_client"] = True
     elif client_type == "aider":
         info["enable_cross_pool_fallback"] = True
+        info["max_retry_attempts"] = 10
+        info["is_ide_client"] = True
     elif client_type == "windsurf":
-        pass  # Windsurf 不启用跨池降级
+        # ✅ [FIX 2026-01-22] Windsurf 不启用跨池降级，但需要增强重试
+        info["max_retry_attempts"] = 10
+        info["retry_keepalive_seconds"] = 180
+        info["is_ide_client"] = True
     elif client_type == "zed":
-        pass  # Zed 不启用跨池降级
+        # ✅ [FIX 2026-01-22] Zed 不启用跨池降级，但需要增强重试
+        info["max_retry_attempts"] = 10
+        info["retry_keepalive_seconds"] = 180
+        info["is_ide_client"] = True
     elif client_type == "copilot":
-        pass  # Copilot 不启用跨池降级
+        # Copilot 有自己的重试机制
+        pass
     elif client_type == "openai_api":
+        # ✅ [FIX 2026-01-22] OpenAI API 客户端也启用增强重试
+        # 很多 IDE 客户端使用 httpx/requests 等通用库，User-Agent 不包含 IDE 标识
+        # 为了保险起见，给这些客户端也提供增强重试能力
         info["enable_cross_pool_fallback"] = True
+        info["max_retry_attempts"] = 10
+        info["is_ide_client"] = True  # 假设可能是 IDE 客户端
+    elif client_type == "unknown":
+        # ✅ [FIX 2026-01-22] 未知客户端也启用增强重试
+        # 很多 IDE 客户端的 User-Agent 无法被正确识别
+        # 为了避免 429 错误直接中断会话，给所有客户端都提供增强重试能力
+        info["max_retry_attempts"] = 10
+        info["is_ide_client"] = True  # 保守策略：假设可能是 IDE 客户端
 
     return info
 

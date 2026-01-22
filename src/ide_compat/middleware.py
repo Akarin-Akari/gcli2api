@@ -42,15 +42,22 @@ class IDECompatMiddleware(BaseHTTPMiddleware):
     3. 响应后: 更新权威历史 (TODO)
     4. 响应后: 缓存新的签名 (TODO)
 
-    只对 Anthropic Messages API 路径生效:
-    - /antigravity/v1/messages
-    - /v1/messages
+    对以下 API 路径生效:
+    - /antigravity/v1/messages (Anthropic Native)
+    - /v1/messages (Anthropic Native)
+    - /antigravity/v1/chat/completions (OpenAI Compatible - Cursor/IDE)
+    - /v1/chat/completions (OpenAI Compatible)
     """
 
     # 需要处理的路径
+    # [FIX 2026-01-21] 添加 OpenAI 兼容路径，修复 Cursor 等 IDE 客户端的 thinking block 处理
     TARGET_PATHS = [
+        # Anthropic Native API
         "/antigravity/v1/messages",
         "/v1/messages",
+        # OpenAI Compatible API (Cursor, Windsurf 等 IDE 使用此路径)
+        "/antigravity/v1/chat/completions",
+        "/v1/chat/completions",
     ]
 
     def __init__(

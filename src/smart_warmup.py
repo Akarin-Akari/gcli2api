@@ -1,5 +1,12 @@
 """
-智能预热模块 - Smart Warmup v7.1
+智能预热模块 - Smart Warmup v7.2
+
+[FIX 2026-01-21 v7.2] 人类化行为优化，消除机器人特征
+- 新增：扫描间隔随机抖动（±20%）
+- 新增：批次间延迟随机抖动（±30%）
+- 新增：多样化预热消息池，随机选择
+- 新增：凭证处理顺序随机化
+- 新增：请求超时随机抖动
 
 [FIX 2026-01-17 v7.1] 修复模型级冷却检查缺失问题
 - 新增：在预热判断前检查 model_cooldowns 状态
@@ -61,7 +68,7 @@ def _get_env_float(name: str, default: float) -> float:
 
 
 class SmartWarmup:
-    """智能预热模块 v7"""
+    """智能预热模块 v7.2"""
 
     # 冷却期（秒）- Pro账号5h重置周期
     COOLDOWN_SECONDS = _get_env_int("SMART_WARMUP_COOLDOWN_SECONDS", 5 * 60 * 60)  # 默认 5 小时
@@ -72,8 +79,28 @@ class SmartWarmup:
     # 扫描间隔（秒）- v7调整：因为100%配额持续时间长，降低扫描频率
     SCAN_INTERVAL = _get_env_int("SMART_WARMUP_SCAN_INTERVAL_SECONDS", 30 * 60)  # 默认 30 分钟
 
+    # [v7.2新增] 扫描间隔抖动比例（±20%）
+    SCAN_INTERVAL_JITTER = _get_env_float("SMART_WARMUP_SCAN_INTERVAL_JITTER", 0.20)
+
     # 批次间延迟（秒）
     BATCH_DELAY_SECONDS = max(0.0, _get_env_float("SMART_WARMUP_BATCH_DELAY_SECONDS", 2.0))
+
+    # [v7.2新增] 批次间延迟抖动比例（±30%）
+    BATCH_DELAY_JITTER = _get_env_float("SMART_WARMUP_BATCH_DELAY_JITTER", 0.30)
+
+    # [v7.2新增] 多样化预热消息池（模拟人类行为）
+    WARMUP_MESSAGES = [
+        "hi",
+        "hello",
+        "hey",
+        "ping",
+        "test",
+        "?",
+        ".",
+        "ok",
+        "1",
+        "check",
+    ]
 
     # 跟随预热模型列表
     FOLLOW_WARMUP_MODELS = [
@@ -100,6 +127,28 @@ class SmartWarmup:
         self.scheduler_task: Optional[asyncio.Task] = None
         self.is_running = False
 
+    @staticmethod
+    def _apply_jitter(base_value: float, jitter_ratio: float) -> float:
+        """[v7.2新增] 应用随机抖动，模拟人类行为
+
+        Args:
+            base_value: 基础值
+            jitter_ratio: 抖动比例（如 0.2 表示 ±20%）
+
+        Returns:
+            带抖动的值
+        """
+        import random
+        if jitter_ratio <= 0:
+            return base_value
+        return base_value * random.uniform(1.0 - jitter_ratio, 1.0 + jitter_ratio)
+
+    @staticmethod
+    def _get_random_warmup_message() -> str:
+        """[v7.2新增] 获取随机预热消息，避免固定模式"""
+        import random
+        return random.choice(SmartWarmup.WARMUP_MESSAGES)
+
     async def start_scheduler(self):
         """启动预热调度器"""
         if self.is_running:
@@ -122,7 +171,13 @@ class SmartWarmup:
         while self.is_running:
             try:
                 await self._scan_and_warmup()
-                await asyncio.sleep(self.SCAN_INTERVAL)
+                # [v7.2] 添加扫描间隔随机抖动，模拟人类行为
+                jittered_interval = self._apply_jitter(
+                    self.SCAN_INTERVAL,
+                    self.SCAN_INTERVAL_JITTER
+                )
+                log.debug(f"[SmartWarmup] 下次扫描间隔: {jittered_interval/60:.1f}分钟")
+                await asyncio.sleep(jittered_interval)
             except asyncio.CancelledError:
                 log.info("[SmartWarmup] 调度器被取消")
                 break
@@ -159,6 +214,11 @@ class SmartWarmup:
         all_credentials = await self.credential_manager._storage_adapter.list_credentials(
             is_antigravity=True
         )
+
+        # [v7.2新增] 随机化凭证处理顺序，避免固定模式
+        import random
+        all_credentials = list(all_credentials)  # 确保是列表
+        random.shuffle(all_credentials)
 
         warmup_tasks = []
         skipped_cooldown = 0
@@ -554,9 +614,13 @@ class SmartWarmup:
                     self._save_history(history)
                     fail_count += 1
 
-                # 批次间延迟
+                # [v7.2] 批次间延迟添加随机抖动，模拟人类行为
                 if self.BATCH_DELAY_SECONDS and i < len(tasks) - 1:
-                    await asyncio.sleep(self.BATCH_DELAY_SECONDS)
+                    jittered_delay = self._apply_jitter(
+                        self.BATCH_DELAY_SECONDS,
+                        self.BATCH_DELAY_JITTER
+                    )
+                    await asyncio.sleep(jittered_delay)
 
             except Exception as e:
                 log.error(f"[SmartWarmup] 预热异常 {cred_name}/{model_name}: {e}")
@@ -574,6 +638,10 @@ class SmartWarmup:
     ) -> str:
         """发送预热请求
 
+        [v7.2] 人类化改进：
+        - 使用随机消息替代固定的 "ping"
+        - 使用随机超时替代固定的 10 秒
+
         Returns:
             str: "success" | "rate_limited" | "failed" | "connect_error"
         """
@@ -581,6 +649,7 @@ class SmartWarmup:
             from src.antigravity_api import build_antigravity_headers, _throttle_antigravity_upstream
             from config import get_antigravity_api_url
             import httpx
+            import random
 
             access_token = cred_data.get("access_token") or cred_data.get("token")
             project_id = cred_data.get("project_id", "")
@@ -598,6 +667,9 @@ class SmartWarmup:
 
             headers = build_antigravity_headers(access_token, model_name)
 
+            # [v7.2] 使用随机消息，避免固定模式
+            warmup_message = self._get_random_warmup_message()
+
             warmup_payload = {
                 "model": model_name,
                 "project": project_id,
@@ -605,7 +677,7 @@ class SmartWarmup:
                     "contents": [
                         {
                             "role": "user",
-                            "parts": [{"text": "ping"}]
+                            "parts": [{"text": warmup_message}]
                         }
                     ],
                     "generationConfig": {
@@ -614,7 +686,10 @@ class SmartWarmup:
                 }
             }
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            # [v7.2] 使用随机超时（8-15秒），避免固定模式
+            timeout = random.uniform(8.0, 15.0)
+
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     target_url,
                     headers=headers,

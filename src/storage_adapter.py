@@ -288,6 +288,31 @@ class StorageAdapter:
 
         return info
 
+    async def clear_all_model_cooldowns(
+        self,
+        filename: str,
+        is_antigravity: bool = False
+    ) -> bool:
+        """
+        清除指定凭证的所有模型级冷却
+
+        [FIX 2026-01-22] 用于凭证检验/projectID切换后，完全重置冷却状态。
+
+        Args:
+            filename: 凭证文件名
+            is_antigravity: 是否为 antigravity 凭证
+
+        Returns:
+            是否成功
+        """
+        if not self._initialized or not self._backend:
+            return False
+
+        if hasattr(self._backend, "clear_all_model_cooldowns"):
+            return await self._backend.clear_all_model_cooldowns(filename, is_antigravity)
+
+        return False
+
 
 # 全局存储适配器实例
 _storage_adapter: Optional[StorageAdapter] = None

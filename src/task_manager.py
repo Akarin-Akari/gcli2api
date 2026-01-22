@@ -7,6 +7,8 @@ import asyncio
 import weakref
 from typing import Any, Dict, Set
 
+import httpx
+
 from log import log
 
 
@@ -88,7 +90,13 @@ class TaskManager:
             resource = resource_ref()
             if resource is not None:
                 try:
-                    if hasattr(resource, "close"):
+                    # ✅ [FIX 2026-01-22] 使用安全的客户端关闭方法
+                    from src.httpx_client import safe_close_client
+                    # 检查是否是 HTTP 客户端类型
+                    if isinstance(resource, (httpx.AsyncClient, type(None))):
+                        # 使用 safe_close_client 处理 HTTP 客户端
+                        await safe_close_client(resource)
+                    elif hasattr(resource, "close"):
                         if asyncio.iscoroutinefunction(resource.close):
                             await resource.close()
                         else:

@@ -67,6 +67,8 @@ class ClientTypeDetector:
         (ClientType.CONTINUE_DEV, [r"continue/", r"continue-dev"], r"continue[/-]?(\d+(?:\.\d+)*)", "Continue.dev"),
         (ClientType.ZED, [r"zed/", r"zed-editor"], r"zed[/-]?(\d+(?:\.\d+)*)", "Zed Editor"),
         (ClientType.COPILOT, [r"github-copilot", r"copilot/"], r"copilot[/-]?(\d+(?:\.\d+)*)", "GitHub Copilot"),
+        # ✅ [FIX 2026-01-22] Cursor IDE 使用 Go HTTP 客户端
+        (ClientType.CURSOR, [r"go-http-client/"], r"go-http-client[/-]?(\d+(?:\.\d+)*)", "Cursor IDE (Go)"),
 
         # 中优先级：通用关键词（可能误匹配，放在后面）
         (ClientType.CURSOR, [r"cursor"], None, "Cursor IDE"),
@@ -198,6 +200,11 @@ class ClientTypeDetector:
                     )
                     return client_type, version, display_name
 
+        # ✅ [FIX 2026-01-22] 未匹配到任何模式时，记录完整的 User-Agent 用于调试
+        log.warning(
+            f"[CLIENT_DETECTOR] No pattern matched for User-Agent: '{user_agent[:200]}'"
+            f"{'...' if len(user_agent) > 200 else ''}"
+        )
         return ClientType.UNKNOWN, "", "Unknown Client"
 
     @classmethod

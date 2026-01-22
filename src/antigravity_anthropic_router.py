@@ -22,6 +22,9 @@ from .anthropic_converter import convert_anthropic_request_to_antigravity_compon
 from .anthropic_streaming import antigravity_sse_to_anthropic_sse
 from .token_estimator import estimate_input_tokens
 from .credential_manager import CredentialManager
+# ✅ [FIX 2026-01-22] 导入客户端检测函数，用于 IDE 增强重试
+from .tool_cleaner import get_client_info
+from .httpx_client import safe_close_client
 
 # ====================== 全局凭证管理器 ======================
 credential_manager = None
@@ -63,6 +66,10 @@ def _get_fallback_models(model_name: str) -> list:
     Returns:
         降级模型列表
     """
+    # 如果 model_name 为 None，返回空列表
+    if model_name is None:
+        return []
+    
     fallback_list = []
 
     # Haiku 模型特殊处理
@@ -164,15 +171,23 @@ async def _handle_request_with_thinking_retry(
     cred_mgr,
     is_stream: bool,
     original_payload: Dict[str, Any],
+    client_info: Optional[Dict[str, Any]] = None,  # ✅ [FIX 2026-01-22] IDE 增强重试参数
 ) -> tuple:
     """
     带 thinking 错误重试的请求处理包装器。
 
     如果遇到 thinking 格式相关的 400 错误，会自动清理 thinking blocks 并重试一次。
     """
+    # ✅ [FIX 2026-01-22] 提取 IDE 增强重试参数
+    max_retry_attempts = client_info.get("max_retry_attempts", 0) if client_info else 0
+    is_ide_client = client_info.get("is_ide_client", False) if client_info else False
+
     try:
         if is_stream:
-            return await send_antigravity_request_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
+            return await send_antigravity_request_stream(
+                request_body, cred_mgr, enable_cross_pool_fallback=True,
+                max_retry_attempts=max_retry_attempts, is_ide_client=is_ide_client
+            )
         else:
             return await send_antigravity_request_no_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
     except Exception as e:
@@ -198,7 +213,10 @@ async def _handle_request_with_thinking_retry(
 
             # 重试请求
             if is_stream:
-                return await send_antigravity_request_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=True)
+                return await send_antigravity_request_stream(
+                    cleaned_request_body, cred_mgr, enable_cross_pool_fallback=True,
+                    max_retry_attempts=max_retry_attempts, is_ide_client=is_ide_client
+                )
             else:
                 return await send_antigravity_request_no_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=True)
 
@@ -570,14 +588,37 @@ async def anthropic_messages(
 
     user_agent = request.headers.get("user-agent", "")
 
+    # ✅ [FIX 2026-01-22] 检测客户端类型，用于 IDE 增强重试
+    forwarded_user_agent = request.headers.get("x-forwarded-user-agent", "")
+    effective_user_agent = forwarded_user_agent or user_agent
+    client_info = get_client_info(effective_user_agent)
+
+    # [FIX 2026-01-20] 统计请求中的 thinking 块，用于诊断签名丢失问题
+    thinking_block_count = 0
+    thinking_with_sig = 0
+    thinking_without_sig = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "thinking":
+                    thinking_block_count += 1
+                    if item.get("signature"):
+                        thinking_with_sig += 1
+                    else:
+                        thinking_without_sig += 1
+
     # [ROLLBACK 2026-01-08] 移除 max_tokens 自动调整逻辑，直接透传客户端设置
     # 原因：自动提升 max_tokens 会导致后端 429 错误
 
     # [FIX 2026-01-08] 增强日志记录，添加 max_tokens 信息用于诊断
+    # [FIX 2026-01-20] 添加 thinking 块统计信息
     log.info(
         f"[ANTHROPIC] /messages 收到请求: client={client_host}:{client_port}, model={model}, "
         f"stream={stream}, messages={len(messages)}, max_tokens={max_tokens}, "
-        f"thinking_present={thinking_present}, thinking={thinking_summary}, ua={user_agent}"
+        f"thinking_present={thinking_present}, thinking={thinking_summary}, "
+        f"thinking_blocks={thinking_block_count}(with_sig={thinking_with_sig}, without_sig={thinking_without_sig}), "
+        f"ua={user_agent}"
     )
 
     if len(messages) == 1 and messages[0].get("role") == "user" and messages[0].get("content") == "Hi":
@@ -658,7 +699,12 @@ async def anthropic_messages(
                     request_body["model"] = attempt_model
 
                 # [FIX 2026-01-08] 启用跨池降级，让 claude-opus-4-5-thinking 在 429 时能自动降级
-                resources, cred_name, _ = await send_antigravity_request_stream(request_body, cred_mgr, enable_cross_pool_fallback=True)
+                # ✅ [FIX 2026-01-22] 添加 IDE 增强重试参数
+                resources, cred_name, _ = await send_antigravity_request_stream(
+                    request_body, cred_mgr, enable_cross_pool_fallback=True,
+                    max_retry_attempts=client_info.get("max_retry_attempts", 0),
+                    is_ide_client=client_info.get("is_ide_client", False)
+                )
                 response, stream_ctx, client = resources
                 break  # 成功则跳出循环
             except Exception as e:
@@ -689,7 +735,12 @@ async def anthropic_messages(
                                 generation_config=cleaned_components["generation_config"],
                             )
                             log.info("[ANTHROPIC] 已清理 thinking blocks，正在重试流式请求...")
-                            resources, cred_name, _ = await send_antigravity_request_stream(cleaned_request_body, cred_mgr, enable_cross_pool_fallback=False)
+                            # ✅ [FIX 2026-01-22] 添加 IDE 增强重试参数
+                            resources, cred_name, _ = await send_antigravity_request_stream(
+                                cleaned_request_body, cred_mgr, enable_cross_pool_fallback=False,
+                                max_retry_attempts=client_info.get("max_retry_attempts", 0),
+                                is_ide_client=client_info.get("is_ide_client", False)
+                            )
                             response, stream_ctx, client = resources
                             break  # 成功则跳出循环
                         except Exception as retry_e:
@@ -751,7 +802,7 @@ async def anthropic_messages(
                 except Exception as e:
                     log.debug(f"[ANTHROPIC] 关闭 stream_ctx 失败: {e}")
                 try:
-                    await client.aclose()
+                    await safe_close_client(client)
                 except Exception as e:
                     log.debug(f"[ANTHROPIC] 关闭 client 失败: {e}")
 
@@ -769,6 +820,20 @@ async def anthropic_messages(
 
     # 带降级的非流式请求
     current_model = components["model"]
+    
+    # 如果 model 为 None，返回错误响应
+    if current_model is None:
+        log.error("[ANTHROPIC] 模型名不能为 None")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Model name is required and cannot be None"
+                }
+            }
+        )
+    
     last_error = None
     response_data = None
 

@@ -27,7 +27,69 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Tuple
 
+# [FIX 2026-01-22] 移除顶层导入，改为延迟导入以避免循环依赖
+# 原因：signature_cache -> converters/__init__ -> message_converter -> signature_cache
+# from src.converters.model_config import get_model_family  # 已移至 _get_model_family_lazy()
+
 log = logging.getLogger("gcli2api.signature_cache")
+
+
+def _get_model_family_lazy(model: str) -> str:
+    """
+    延迟导入 get_model_family 以避免循环依赖
+
+    [FIX 2026-01-22] 解决循环导入问题：
+    signature_cache.py -> converters/__init__.py -> message_converter.py -> signature_cache.py
+
+    Args:
+        model: 模型名称
+
+    Returns:
+        模型家族标识
+    """
+    from src.converters.model_config import get_model_family
+    return get_model_family(model)
+
+
+# ============================================================================
+# [FIX 2026-01-21] 客户端特定 TTL 配置 (P0 方案 S2)
+# 为不同客户端配置不同的缓存有效期，IDE 客户端（Cursor/Windsurf）会话通常更长
+# ============================================================================
+
+CLIENT_TTL_CONFIG = {
+    # IDE 客户端 - 会话更长，使用 2 小时 TTL
+    "cursor": 7200,       # 2小时 - Cursor IDE
+    "windsurf": 7200,     # 2小时 - Windsurf IDE
+    # CLI 客户端 - 标准 1 小时 TTL
+    "claude_code": 3600,  # 1小时 - Claude Code CLI
+    "cline": 3600,        # 1小时 - Cline
+    "aider": 3600,        # 1小时 - Aider
+    "continue_dev": 3600, # 1小时 - Continue Dev
+    "openai_api": 3600,   # 1小时 - OpenAI API 兼容客户端
+    # 默认值
+    "default": 3600       # 1小时 - 未知客户端默认值
+}
+
+
+def get_ttl_for_client(client_type: str) -> int:
+    """
+    获取客户端特定的 TTL（秒）
+
+    [FIX 2026-01-21] P0 方案 S2: 客户端特定 TTL
+    IDE 客户端（Cursor/Windsurf）会话通常更长，延长 TTL 可提高缓存命中率。
+
+    Args:
+        client_type: 客户端类型标识
+
+    Returns:
+        TTL 秒数
+    """
+    if not client_type:
+        return CLIENT_TTL_CONFIG["default"]
+
+    # 规范化客户端类型（小写）
+    normalized = client_type.lower().strip()
+    return CLIENT_TTL_CONFIG.get(normalized, CLIENT_TTL_CONFIG["default"])
 
 
 @dataclass
@@ -39,6 +101,11 @@ class CacheEntry:
     timestamp: float
     access_count: int = 0
     model: Optional[str] = None
+    # [FIX 2026-01-21] 新增 model_family 字段，用于跨模型 thinking 隔离
+    model_family: Optional[str] = None
+    # [FIX 2026-01-22] 新增 owner_id 字段，用于多客户端会话隔离
+    # 解决多个 Claude 实例连接同一网关时 signature 串扰问题
+    owner_id: Optional[str] = None
 
     def is_expired(self, ttl_seconds: float) -> bool:
         """检查缓存条目是否过期"""
@@ -217,13 +284,21 @@ class SignatureCache:
         text_prefix = normalized_text[:self._key_prefix_length]
         return hashlib.md5(text_prefix.encode('utf-8')).hexdigest()
 
-    def cache_tool_signature(self, tool_id: str, signature: str) -> bool:
+    def cache_tool_signature(
+        self,
+        tool_id: str,
+        signature: str,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+    ) -> bool:
         """
         缓存工具ID到签名的映射 (Layer 1)
+
+        [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 
         Args:
             tool_id: 工具调用ID
             signature: 对应的 signature 值
+            owner_id: 可选的所有者ID，用于多客户端会话隔离
 
         Returns:
             是否成功缓存
@@ -239,17 +314,25 @@ class SignatureCache:
                 signature=signature,
                 thinking_text="",  # 工具ID缓存不需要thinking_text
                 thinking_text_preview="",
-                timestamp=time.time()
+                timestamp=time.time(),
+                owner_id=owner_id  # [FIX 2026-01-22] 存储 owner_id
             )
-            log.debug(f"[SIGNATURE_CACHE] 工具ID签名缓存成功: tool_id={tool_id}, sig={signature[:20]}...")
+            log.debug(f"[SIGNATURE_CACHE] 工具ID签名缓存成功: tool_id={tool_id}, sig={signature[:20]}..., owner={owner_id[:8] if owner_id else 'None'}...")
         return True
 
-    def get_tool_signature(self, tool_id: str) -> Optional[str]:
+    def get_tool_signature(
+        self,
+        tool_id: str,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+    ) -> Optional[str]:
         """
         通过工具ID获取签名 (Layer 1)
 
+        [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
+
         Args:
             tool_id: 工具调用ID
+            owner_id: 可选的所有者ID，用于多客户端会话隔离
 
         Returns:
             缓存的 signature，如果未命中或已过期则返回 None
@@ -261,9 +344,14 @@ class SignatureCache:
             entry = self._tool_signatures.get(tool_id)
             if entry:
                 if not entry.is_expired(self._ttl_seconds):
+                    # [FIX 2026-01-22] owner_id 隔离检查
+                    if owner_id and entry.owner_id and entry.owner_id != owner_id:
+                        log.debug(f"[SIGNATURE_CACHE] 工具ID签名 owner_id 不匹配，跳过: tool_id={tool_id}")
+                        self._layer_stats["tool_cache_misses"] += 1
+                        return None
                     # [P1-2] 统计：Layer 1 缓存命中
                     self._layer_stats["tool_cache_hits"] += 1
-                    log.debug(f"[SIGNATURE_CACHE] 工具ID签名缓存命中: tool_id={tool_id}")
+                    log.debug(f"[SIGNATURE_CACHE] 工具ID签名缓存命中: tool_id={tool_id}, owner={entry.owner_id[:8] if entry.owner_id else 'None'}...")
                     return entry.signature
                 else:
                     # 过期删除
@@ -279,15 +367,19 @@ class SignatureCache:
         self,
         session_id: str,
         signature: str,
-        thinking_text: str = ""
+        thinking_text: str = "",
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
     ) -> bool:
         """
         缓存 Session 级别的签名 (Layer 3)
+
+        [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 
         Args:
             session_id: 会话ID或会话指纹
             signature: 对应的 signature 值
             thinking_text: 可选的 thinking 文本（用于调试和验证）
+            owner_id: 可选的所有者ID，用于多客户端会话隔离
 
         Returns:
             是否成功缓存
@@ -305,20 +397,28 @@ class SignatureCache:
                 signature=signature,
                 thinking_text=thinking_text,
                 thinking_text_preview=thinking_text[:200] if thinking_text else "",
-                timestamp=time.time()
+                timestamp=time.time(),
+                owner_id=owner_id  # [FIX 2026-01-22] 存储 owner_id
             )
             log.info(
                 f"[SIGNATURE_CACHE] Session 签名缓存成功: "
-                f"session_id={session_id[:16]}..., sig={signature[:20]}..."
+                f"session_id={session_id[:16]}..., sig={signature[:20]}..., owner={owner_id[:8] if owner_id else 'None'}..."
             )
         return True
 
-    def get_session_signature(self, session_id: str) -> Optional[str]:
+    def get_session_signature(
+        self,
+        session_id: str,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+    ) -> Optional[str]:
         """
         通过 Session ID 获取签名 (Layer 3)
 
+        [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
+
         Args:
             session_id: 会话ID或会话指纹
+            owner_id: 可选的所有者ID，用于多客户端会话隔离
 
         Returns:
             缓存的 signature，如果未命中或已过期则返回 None
@@ -330,9 +430,14 @@ class SignatureCache:
             entry = self._session_signatures.get(session_id)
             if entry:
                 if not entry.is_expired(self._ttl_seconds):
+                    # [FIX 2026-01-22] owner_id 隔离检查
+                    if owner_id and entry.owner_id and entry.owner_id != owner_id:
+                        log.debug(f"[SIGNATURE_CACHE] Session 签名 owner_id 不匹配，跳过: session_id={session_id[:16]}...")
+                        self._layer_stats["session_cache_misses"] += 1
+                        return None
                     # [P1-2] 统计：Layer 3 缓存命中
                     self._layer_stats["session_cache_hits"] += 1
-                    log.info(f"[SIGNATURE_CACHE] Session 签名缓存命中: session_id={session_id[:16]}...")
+                    log.info(f"[SIGNATURE_CACHE] Session 签名缓存命中: session_id={session_id[:16]}..., owner={entry.owner_id[:8] if entry.owner_id else 'None'}...")
                     return entry.signature
                 else:
                     # 过期删除
@@ -344,12 +449,19 @@ class SignatureCache:
                 self._layer_stats["session_cache_misses"] += 1
         return None
 
-    def get_session_signature_with_text(self, session_id: str) -> Optional[Tuple[str, str]]:
+    def get_session_signature_with_text(
+        self,
+        session_id: str,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+    ) -> Optional[Tuple[str, str]]:
         """
         通过 Session ID 获取签名及其对应的 thinking 文本 (Layer 3)
 
+        [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
+
         Args:
             session_id: 会话ID或会话指纹
+            owner_id: 可选的所有者ID，用于多客户端会话隔离
 
         Returns:
             (signature, thinking_text) 元组，如果未命中或已过期则返回 None
@@ -361,9 +473,13 @@ class SignatureCache:
             entry = self._session_signatures.get(session_id)
             if entry:
                 if not entry.is_expired(self._ttl_seconds):
+                    # [FIX 2026-01-22] owner_id 隔离检查
+                    if owner_id and entry.owner_id and entry.owner_id != owner_id:
+                        log.debug(f"[SIGNATURE_CACHE] Session 签名 owner_id 不匹配，跳过: session_id={session_id[:16]}...")
+                        return None
                     log.info(
                         f"[SIGNATURE_CACHE] Session 签名缓存命中（含文本）: "
-                        f"session_id={session_id[:16]}..., thinking_len={len(entry.thinking_text)}"
+                        f"session_id={session_id[:16]}..., thinking_len={len(entry.thinking_text)}, owner={entry.owner_id[:8] if entry.owner_id else 'None'}..."
                     )
                     return (entry.signature, entry.thinking_text)
                 else:
@@ -376,7 +492,8 @@ class SignatureCache:
         self,
         thinking_text: str,
         signature: str,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
     ) -> bool:
         """
         缓存 signature
@@ -385,6 +502,7 @@ class SignatureCache:
             thinking_text: thinking 块的文本内容
             signature: 对应的 signature 值
             model: 可选的模型名称
+            owner_id: 可选的所有者标识（用于多客户端会话隔离）
 
         Returns:
             是否成功缓存
@@ -403,13 +521,19 @@ class SignatureCache:
             return False
 
         with self._lock:
+            # [FIX 2026-01-21] 自动计算 model_family，用于跨模型 thinking 隔离
+            # [FIX 2026-01-22] 使用延迟导入函数避免循环依赖
+            model_family = _get_model_family_lazy(model) if model else None
+
             # 创建缓存条目
             entry = CacheEntry(
                 signature=signature,
                 thinking_text=thinking_text,  # 保存完整的 thinking 文本（用于 fallback 恢复）
                 thinking_text_preview=thinking_text[:200],  # 只保存前 200 字符用于调试
                 timestamp=time.time(),
-                model=model
+                model=model,
+                model_family=model_family,  # [FIX 2026-01-21] 记录模型家族
+                owner_id=owner_id  # [FIX 2026-01-22] 记录所有者标识
             )
 
             # 如果 key 已存在，先删除（更新访问顺序）
@@ -429,16 +553,23 @@ class SignatureCache:
             log.debug(
                 f"[SIGNATURE_CACHE] 缓存写入成功: key={key[:16]}..., "
                 f"thinking={thinking_text[:50]}..., "
+                f"owner_id={owner_id[:8] if owner_id else 'None'}..., "
                 f"cache_size={len(self._cache)}"
             )
             return True
 
-    def get(self, thinking_text: str) -> Optional[str]:
+    def get(
+        self,
+        thinking_text: str,
+        owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+    ) -> Optional[str]:
         """
         获取缓存的 signature
 
         Args:
             thinking_text: thinking 块的文本内容
+            owner_id: 可选的所有者标识（用于多客户端会话隔离）
+                      如果提供，只返回属于该 owner 的缓存
 
         Returns:
             缓存的 signature，如果未命中或已过期则返回 None
@@ -448,6 +579,9 @@ class SignatureCache:
         例如：thinking A 和 thinking B 前 500 字符相同，会共享同一个 key。
         如果先缓存 A 再缓存 B，那么查询 A 时会错误地返回 B 的 signature。
         修复：在返回 signature 之前，验证完整的 thinking 文本是否匹配。
+
+        [FIX 2026-01-22] 新增 owner_id 过滤：
+        解决多个 Claude 实例连接同一网关时 signature 串扰问题。
         """
         if not thinking_text:
             return None
@@ -479,6 +613,18 @@ class SignatureCache:
                 log.debug(f"[SIGNATURE_CACHE] 缓存已过期: key={key[:16]}...")
                 return None
 
+            # [FIX 2026-01-22] owner_id 隔离检查
+            # 如果提供了 owner_id，必须匹配才能返回
+            if owner_id and entry.owner_id and entry.owner_id != owner_id:
+                log.debug(
+                    f"[SIGNATURE_CACHE] owner_id 不匹配，跳过: "
+                    f"key={key[:16]}..., query_owner={owner_id[:8]}..., "
+                    f"cached_owner={entry.owner_id[:8]}..."
+                )
+                self._stats.misses += 1
+                self._layer_stats["cache_misses"] += 1
+                return None
+
             # [FIX 2026-01-09] 验证完整文本匹配，防止哈希冲突导致的 signature 不匹配
             # 规范化缓存中的文本
             normalized_cached = self._normalize_thinking_text(entry.thinking_text)
@@ -506,6 +652,7 @@ class SignatureCache:
             log.info(
                 f"[SIGNATURE_CACHE] 缓存命中（文本验证通过）: key={key[:16]}..., "
                 f"thinking_len={len(thinking_text)}, "
+                f"owner_id={owner_id[:8] if owner_id else 'None'}..., "
                 f"access_count={entry.access_count}"
             )
             return entry.signature
@@ -721,16 +868,23 @@ def reset_signature_cache() -> None:
 
 
 # 便捷函数 - [FIX 2026-01-12] 修改为支持迁移模式代理
-def cache_signature(thinking_text: str, signature: str, model: Optional[str] = None) -> bool:
+def cache_signature(
+    thinking_text: str,
+    signature: str,
+    model: Optional[str] = None,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+) -> bool:
     """
     缓存 signature（便捷函数）
 
     [FIX 2026-01-12] 添加迁移模式支持，当启用迁移模式时代理到 CacheFacade。
+    [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 
     Args:
         thinking_text: thinking 块的文本内容
         signature: 对应的 signature 值
         model: 可选的模型名称
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
 
     Returns:
         是否成功缓存
@@ -740,19 +894,25 @@ def cache_signature(thinking_text: str, signature: str, model: Optional[str] = N
         facade = _get_migration_facade()
         if facade:
             log.debug("[SIGNATURE_CACHE] cache_signature: 代理到迁移门面")
+            # 注意：迁移门面可能需要后续升级以支持 owner_id
             return facade.cache_signature(thinking_text, signature, model)
 
-    return get_signature_cache().set(thinking_text, signature, model)
+    return get_signature_cache().set(thinking_text, signature, model, owner_id)
 
 
-def get_cached_signature(thinking_text: str) -> Optional[str]:
+def get_cached_signature(
+    thinking_text: str,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+) -> Optional[str]:
     """
     获取缓存的 signature（便捷函数）
 
     [FIX 2026-01-12] 添加迁移模式支持，当启用迁移模式时代理到 CacheFacade。
+    [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 
     Args:
         thinking_text: thinking 块的文本内容
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
 
     Returns:
         缓存的 signature，如果未命中则返回 None
@@ -762,9 +922,10 @@ def get_cached_signature(thinking_text: str) -> Optional[str]:
         facade = _get_migration_facade()
         if facade:
             log.debug("[SIGNATURE_CACHE] get_cached_signature: 代理到迁移门面")
+            # 注意：迁移门面可能需要后续升级以支持 owner_id
             return facade.get_cached_signature(thinking_text)
 
-    return get_signature_cache().get(thinking_text)
+    return get_signature_cache().get(thinking_text, owner_id)
 
 
 def get_cache_stats() -> Dict[str, Any]:
@@ -900,27 +1061,176 @@ def get_last_signature_with_text() -> Optional[tuple]:
         return None
 
 
-def cache_tool_signature(tool_id: str, signature: str) -> bool:
+def get_recent_signature(
+    time_window_seconds: int = 300,
+    client_type: Optional[str] = None,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+) -> Optional[str]:
+    """
+    获取最近 N 秒内缓存的任意签名（时间窗口 Fallback）
+
+    [FIX 2026-01-21] P0 方案 T3: 时间窗口 Fallback
+    作为最后的 fallback，当所有其他恢复层都失败时使用。
+
+    [FIX 2026-01-22] 新增 owner_id 过滤：
+    如果提供 owner_id，严格限制只返回该 owner 的签名，防止跨用户污染。
+
+    Args:
+        time_window_seconds: 时间窗口（默认 5 分钟）
+        client_type: 可选的客户端类型，用于动态调整时间窗口
+        owner_id: 可选的所有者标识（用于多客户端会话隔离）
+
+    Returns:
+        最近的签名，如果没有则返回 None
+    """
+    # 如果提供了客户端类型，使用客户端特定 TTL 的一半作为时间窗口
+    if client_type:
+        client_ttl = get_ttl_for_client(client_type)
+        time_window_seconds = client_ttl // 2
+        log.debug(f"[SIGNATURE_CACHE] get_recent_signature: 使用客户端特定时间窗口 {time_window_seconds}s (client={client_type})")
+
+    now = time.time()
+    cache = get_signature_cache()
+
+    # 从 Tool Cache 查找
+    # TODO: Tool ID 缓存目前没有 owner_id 字段，暂时无法隔离
+    # 鉴于 tool_id 碰撞概率极低（通常包含随机字符串），这层暂且安全
+    with cache._tool_lock:
+        # 按时间戳降序排序，找到最近的有效签名
+        sorted_entries = sorted(
+            cache._tool_signatures.items(),
+            key=lambda x: x[1].timestamp,
+            reverse=True
+        )
+        for tool_id, entry in sorted_entries:
+            age = now - entry.timestamp
+            if age < time_window_seconds:
+                log.info(f"[SIGNATURE_CACHE] get_recent_signature: 从 Tool Cache 找到, age={age:.1f}s, tool_id={tool_id[:20]}...")
+                return entry.signature
+
+    # 从 Session Cache 查找
+    # Session Cache 目前也没有 owner_id，但 session_id 碰撞概率相对较低
+    # [TODO] 后续也可以给 Session Cache 加上 owner_id
+    with cache._session_lock:
+        sorted_entries = sorted(
+            cache._session_signatures.items(),
+            key=lambda x: x[1].timestamp,
+            reverse=True
+        )
+        for session_id, entry in sorted_entries:
+            age = now - entry.timestamp
+            if age < time_window_seconds:
+                log.info(f"[SIGNATURE_CACHE] get_recent_signature: 从 Session Cache 找到, age={age:.1f}s, session_id={session_id[:16]}...")
+                return entry.signature
+
+    # 从主缓存查找
+    with cache._lock:
+        for key in reversed(cache._cache.keys()):
+            entry = cache._cache[key]
+
+            # [FIX 2026-01-22] 强制 owner_id 过滤
+            if owner_id:
+                if not entry.owner_id or entry.owner_id != owner_id:
+                    continue  # 只有明确属于该 owner 的条目才允许用于 fallback
+
+            age = now - entry.timestamp
+            if age < time_window_seconds:
+                log.info(f"[SIGNATURE_CACHE] get_recent_signature: 从主缓存找到, age={age:.1f}s, key={key[:16]}..., owner={entry.owner_id[:8] if entry.owner_id else 'None'}...")
+                return entry.signature
+
+    log.debug(f"[SIGNATURE_CACHE] get_recent_signature: 未找到 {time_window_seconds}s 内的签名 (owner={owner_id[:8] if owner_id else 'None'}...)")
+    return None
+
+
+def get_recent_signature_with_text(
+    time_window_seconds: int = 300,
+    client_type: Optional[str] = None,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
+) -> Optional[Tuple[str, str]]:
+    """
+    获取最近 N 秒内缓存的签名及其对应的 thinking 文本
+
+    [FIX 2026-01-21] P0 方案 T3: 时间窗口 Fallback（含文本版本）
+    [FIX 2026-01-22] 新增 owner_id 过滤，阻止跨用户签名污染
+
+    Args:
+        time_window_seconds: 时间窗口（默认 5 分钟）
+        client_type: 可选的客户端类型，用于动态调整时间窗口
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
+
+    Returns:
+        (signature, thinking_text) 元组，如果没有则返回 None
+    """
+    # 如果提供了客户端类型，使用客户端特定 TTL 的一半作为时间窗口
+    if client_type:
+        client_ttl = get_ttl_for_client(client_type)
+        time_window_seconds = client_ttl // 2
+
+    now = time.time()
+    cache = get_signature_cache()
+
+    # 优先从主缓存查找（包含 thinking_text）
+    with cache._lock:
+        for key in reversed(cache._cache.keys()):
+            entry = cache._cache[key]
+            age = now - entry.timestamp
+            if age < time_window_seconds:
+                # [FIX 2026-01-22] 强制 owner_id 过滤，阻止跨用户签名污染
+                if owner_id:
+                    if not entry.owner_id or entry.owner_id != owner_id:
+                        continue  # 只有明确属于该 owner 的条目才允许用于 fallback
+                log.info(f"[SIGNATURE_CACHE] get_recent_signature_with_text: 找到, age={age:.1f}s, thinking_len={len(entry.thinking_text)}, owner={entry.owner_id[:8] if entry.owner_id else 'None'}...")
+                return (entry.signature, entry.thinking_text)
+
+    # Session Cache 也可能有 thinking_text
+    with cache._session_lock:
+        sorted_entries = sorted(
+            cache._session_signatures.items(),
+            key=lambda x: x[1].timestamp,
+            reverse=True
+        )
+        for session_id, entry in sorted_entries:
+            age = now - entry.timestamp
+            if age < time_window_seconds and entry.thinking_text:
+                # [FIX 2026-01-22] 强制 owner_id 过滤，阻止跨用户签名污染
+                if owner_id:
+                    if not entry.owner_id or entry.owner_id != owner_id:
+                        continue  # 只有明确属于该 owner 的条目才允许用于 fallback
+                log.info(f"[SIGNATURE_CACHE] get_recent_signature_with_text: 从 Session Cache 找到, age={age:.1f}s, owner={entry.owner_id[:8] if entry.owner_id else 'None'}...")
+                return (entry.signature, entry.thinking_text)
+
+    log.debug(f"[SIGNATURE_CACHE] get_recent_signature_with_text: 未找到 {time_window_seconds}s 内的签名 (owner={owner_id[:8] if owner_id else 'None'}...)")
+    return None
+
+
+def cache_tool_signature(
+    tool_id: str,
+    signature: str,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+) -> bool:
     """
     缓存工具ID到签名的映射（便捷函数）
 
     [FIX 2026-01-17] 添加持久化支持：在迁移模式下同时写入内存和SQLite
+    [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 
     Args:
         tool_id: 工具调用ID
         signature: 对应的 signature 值
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
 
     Returns:
         是否成功缓存
     """
     # 始终写入内存缓存
-    memory_result = get_signature_cache().cache_tool_signature(tool_id, signature)
+    memory_result = get_signature_cache().cache_tool_signature(tool_id, signature, owner_id)
 
     # [FIX 2026-01-17] 迁移模式下同时写入 SQLite 持久化
     if _is_migration_mode():
         facade = _get_migration_facade()
         if facade and hasattr(facade, 'cache_tool_signature'):
             try:
+                # 注意：迁移门面可能需要后续升级以支持 owner_id
                 db_result = facade.cache_tool_signature(tool_id, signature)
                 log.debug(f"[SIGNATURE_CACHE] cache_tool_signature: 持久化到SQLite, result={db_result}")
             except Exception as e:
@@ -929,20 +1239,25 @@ def cache_tool_signature(tool_id: str, signature: str) -> bool:
     return memory_result
 
 
-def get_tool_signature(tool_id: str) -> Optional[str]:
+def get_tool_signature(
+    tool_id: str,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+) -> Optional[str]:
     """
     通过工具ID获取签名（便捷函数）
 
     [FIX 2026-01-17] 添加持久化支持：先查内存，再查SQLite
+    [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 
     Args:
         tool_id: 工具调用ID
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
 
     Returns:
         缓存的 signature，如果未命中则返回 None
     """
     # 先查内存缓存
-    result = get_signature_cache().get_tool_signature(tool_id)
+    result = get_signature_cache().get_tool_signature(tool_id, owner_id)
     if result:
         return result
 
@@ -954,13 +1269,134 @@ def get_tool_signature(tool_id: str) -> Optional[str]:
                 db_result = facade.get_tool_signature(tool_id)
                 if db_result:
                     log.info(f"[SIGNATURE_CACHE] get_tool_signature: 从SQLite恢复, tool_id={tool_id[:20]}...")
-                    # 回填到内存缓存
-                    get_signature_cache().cache_tool_signature(tool_id, db_result)
+                    # 回填到内存缓存（注意：迁移门面可能需要后续升级以支持 owner_id）
+                    get_signature_cache().cache_tool_signature(tool_id, db_result, owner_id)
                     return db_result
             except Exception as e:
                 log.warning(f"[SIGNATURE_CACHE] get_tool_signature: SQLite查询失败: {e}")
 
     return None
+
+
+# ==================== T1: Tool ID 前缀匹配 (P1 方案) ====================
+
+
+def extract_base_tool_id(tool_id: str) -> str:
+    """
+    从可能被修改的 Tool ID 中提取基础 ID
+
+    [FIX 2026-01-21] P1 方案 T1: Tool ID 前缀匹配
+    某些客户端可能会修改 Tool ID（添加后缀、前缀等），
+    这个函数尝试提取原始的基础 Tool ID。
+
+    常见的修改模式：
+    - toolu_xxx_123456 -> toolu_xxx （带数字后缀）
+    - call_toolu_xxx -> toolu_xxx （带前缀）
+    - toolu_xxx_retry1 -> toolu_xxx （带重试后缀）
+
+    Args:
+        tool_id: 原始的 Tool ID
+
+    Returns:
+        提取的基础 Tool ID
+    """
+    if not tool_id:
+        return ""
+
+    import re
+
+    # 1. 移除常见的后缀模式
+    # 移除 _数字 后缀 (如 _123456, _001)
+    base_id = re.sub(r'_\d+$', '', tool_id)
+
+    # 移除 _retryN 后缀 (如 _retry1, _retry2)
+    base_id = re.sub(r'_retry\d*$', '', base_id, flags=re.IGNORECASE)
+
+    # 移除 _copy 后缀
+    base_id = re.sub(r'_copy\d*$', '', base_id, flags=re.IGNORECASE)
+
+    # 2. 移除常见的前缀模式
+    # 移除 call_ 前缀
+    if base_id.startswith('call_'):
+        base_id = base_id[5:]
+
+    # 移除 req_ 前缀
+    if base_id.startswith('req_'):
+        base_id = base_id[4:]
+
+    # 3. 如果结果为空，返回原始 ID
+    if not base_id:
+        return tool_id
+
+    return base_id
+
+
+def get_tool_signature_fuzzy(
+    tool_id: str,
+    max_candidates: int = 5
+) -> Optional[str]:
+    """
+    通过模糊匹配查找 Tool 签名
+
+    [FIX 2026-01-21] P1 方案 T1: Tool ID 前缀匹配
+    当精确匹配失败时，使用模糊匹配策略：
+    1. 先尝试精确匹配
+    2. 提取 base_id 并尝试前缀匹配
+    3. 在候选中选择最近的签名
+
+    Args:
+        tool_id: 工具调用ID
+        max_candidates: 最大候选数量
+
+    Returns:
+        找到的签名，如果都未命中则返回 None
+    """
+    # 1. 先尝试精确匹配
+    exact_result = get_tool_signature(tool_id)
+    if exact_result:
+        return exact_result
+
+    # 2. 提取 base_id
+    base_id = extract_base_tool_id(tool_id)
+    if base_id == tool_id:
+        # 没有提取出不同的 base_id，无法进行模糊匹配
+        log.debug(f"[SIGNATURE_CACHE] Tool 模糊匹配: base_id 与原 ID 相同，跳过")
+        return None
+
+    # 3. 尝试 base_id 精确匹配
+    base_result = get_tool_signature(base_id)
+    if base_result:
+        log.info(f"[SIGNATURE_CACHE] Tool 模糊匹配成功: base_id={base_id}")
+        return base_result
+
+    # 4. 在 Tool Cache 中搜索前缀匹配
+    cache = get_signature_cache()
+    candidates = []
+
+    # 获取所有 Tool Cache 条目
+    for cached_tool_id, entry in cache._tool_cache.items():
+        # 检查是否以 base_id 开头或 base_id 是否是 cached_tool_id 的子串
+        if cached_tool_id.startswith(base_id) or base_id in cached_tool_id:
+            candidates.append((cached_tool_id, entry))
+
+    if not candidates:
+        log.debug(f"[SIGNATURE_CACHE] Tool 模糊匹配: 未找到 base_id={base_id} 的候选")
+        return None
+
+    # 5. 按时间戳排序，选择最近的
+    candidates.sort(key=lambda x: x[1].get('timestamp', 0), reverse=True)
+
+    # 取最多 max_candidates 个
+    candidates = candidates[:max_candidates]
+
+    # 返回最近的签名
+    best_match = candidates[0]
+    log.info(
+        f"[SIGNATURE_CACHE] Tool 模糊匹配成功: "
+        f"original={tool_id[:20]}..., matched={best_match[0][:20]}..., "
+        f"candidates={len(candidates)}"
+    )
+    return best_match[1].get('signature')
 
 
 # ==================== Session 缓存便捷函数 (Layer 3) ====================
@@ -1019,28 +1455,189 @@ def generate_session_fingerprint(messages: List[Dict]) -> str:
     return fingerprint
 
 
-def cache_session_signature(session_id: str, signature: str, thinking_text: str = "") -> bool:
+def generate_last_n_fingerprint(messages: List[Dict], n: int = 3) -> str:
+    """
+    基于最后 N 条消息生成指纹
+
+    [FIX 2026-01-21] P1 方案 S1: 多级 Session 指纹
+    当第一条用户消息指纹匹配失败时，尝试使用最后 N 条消息的指纹。
+
+    Args:
+        messages: 消息列表
+        n: 使用最后多少条消息（默认 3）
+
+    Returns:
+        MD5 哈希的前 16 位，如果无法生成则返回空字符串
+    """
+    if not messages:
+        return ""
+
+    last_n = messages[-n:] if len(messages) >= n else messages
+    content_parts = []
+
+    for msg in last_n:
+        if not isinstance(msg, dict):
+            continue
+
+        role = msg.get("role", "")
+        msg_content = msg.get("content", "")
+
+        # 处理多模态内容
+        if isinstance(msg_content, list):
+            text_parts = [
+                item.get("text", "") for item in msg_content
+                if isinstance(item, dict) and item.get("type") == "text"
+            ]
+            msg_content = " ".join(text_parts)
+
+        # 只取前 100 个字符，避免过长
+        if msg_content:
+            content_parts.append(f"{role}:{msg_content[:100]}")
+
+    if not content_parts:
+        return ""
+
+    combined = "|".join(content_parts)
+    fingerprint = hashlib.md5(combined.encode('utf-8')).hexdigest()[:16]
+    log.debug(f"[SIGNATURE_CACHE] 生成 last_n 指纹: {fingerprint}, n={len(last_n)}")
+    return fingerprint
+
+
+def generate_full_fingerprint(messages: List[Dict]) -> str:
+    """
+    基于全部消息生成指纹摘要
+
+    [FIX 2026-01-21] P1 方案 S1: 多级 Session 指纹
+    作为最后的匹配尝试，使用全部消息的摘要。
+
+    Args:
+        messages: 消息列表
+
+    Returns:
+        MD5 哈希的前 16 位，如果无法生成则返回空字符串
+    """
+    if not messages:
+        return ""
+
+    # 提取所有消息的角色和内容前缀
+    content_parts = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+
+        role = msg.get("role", "")
+        msg_content = msg.get("content", "")
+
+        if isinstance(msg_content, list):
+            text_parts = [
+                item.get("text", "") for item in msg_content
+                if isinstance(item, dict) and item.get("type") == "text"
+            ]
+            msg_content = " ".join(text_parts)
+
+        # 只取前 50 个字符
+        if msg_content:
+            content_parts.append(f"{role}:{msg_content[:50]}")
+
+    if not content_parts:
+        return ""
+
+    combined = "|".join(content_parts)
+    fingerprint = hashlib.md5(combined.encode('utf-8')).hexdigest()[:16]
+    log.debug(f"[SIGNATURE_CACHE] 生成 full 指纹: {fingerprint}, msg_count={len(messages)}")
+    return fingerprint
+
+
+def generate_multi_level_fingerprint(messages: List[Dict]) -> Dict[str, str]:
+    """
+    生成多级会话指纹
+
+    [FIX 2026-01-21] P1 方案 S1: 多级 Session 指纹
+    生成多个维度的指纹，提高匹配概率。
+
+    Args:
+        messages: 消息列表
+
+    Returns:
+        包含多级指纹的字典:
+        {
+            "first_user": "abc123...",   # 第一条用户消息
+            "last_n": "def456...",       # 最后 N 条消息
+            "full": "ghi789..."          # 全部消息摘要
+        }
+    """
+    return {
+        "first_user": generate_session_fingerprint(messages),
+        "last_n": generate_last_n_fingerprint(messages, n=3),
+        "full": generate_full_fingerprint(messages)
+    }
+
+
+def get_session_signature_multi_level(
+    messages: List[Dict],
+    fingerprints: Optional[Dict[str, str]] = None
+) -> Optional[str]:
+    """
+    多级指纹查找签名
+
+    [FIX 2026-01-21] P1 方案 S1: 多级 Session 指纹
+    按优先级尝试多个指纹，提高匹配成功率。
+
+    Args:
+        messages: 消息列表（用于生成指纹，如果 fingerprints 未提供）
+        fingerprints: 可选的预生成指纹字典
+
+    Returns:
+        找到的签名，如果都未命中则返回 None
+    """
+    if fingerprints is None:
+        fingerprints = generate_multi_level_fingerprint(messages)
+
+    # 优先级: first_user > last_n > full
+    priority_order = ["first_user", "last_n", "full"]
+
+    for level in priority_order:
+        fp = fingerprints.get(level)
+        if fp:
+            sig = get_session_signature(fp)
+            if sig:
+                log.info(f"[SIGNATURE_CACHE] 多级指纹命中: level={level}, fingerprint={fp[:8]}...")
+                return sig
+
+    log.debug("[SIGNATURE_CACHE] 多级指纹查找: 所有级别都未命中")
+    return None
+
+
+def cache_session_signature(
+    session_id: str,
+    signature: str,
+    thinking_text: str = "",
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+) -> bool:
     """
     缓存 Session 级别的签名（便捷函数）
 
     [FIX 2026-01-17] 添加持久化支持：在迁移模式下同时写入内存和SQLite
+    [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 
     Args:
         session_id: 会话ID或会话指纹
         signature: 对应的 signature 值
         thinking_text: 可选的 thinking 文本
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
 
     Returns:
         是否成功缓存
     """
     # 始终写入内存缓存
-    memory_result = get_signature_cache().cache_session_signature(session_id, signature, thinking_text)
+    memory_result = get_signature_cache().cache_session_signature(session_id, signature, thinking_text, owner_id)
 
     # [FIX 2026-01-17] 迁移模式下同时写入 SQLite 持久化
     if _is_migration_mode():
         facade = _get_migration_facade()
         if facade and hasattr(facade, 'cache_session_signature'):
             try:
+                # 注意：迁移门面可能需要后续升级以支持 owner_id
                 db_result = facade.cache_session_signature(session_id, signature, thinking_text)
                 log.debug(f"[SIGNATURE_CACHE] cache_session_signature: 持久化到SQLite, result={db_result}")
             except Exception as e:
@@ -1049,20 +1646,25 @@ def cache_session_signature(session_id: str, signature: str, thinking_text: str 
     return memory_result
 
 
-def get_session_signature(session_id: str) -> Optional[str]:
+def get_session_signature(
+    session_id: str,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+) -> Optional[str]:
     """
     通过 Session ID 获取签名（便捷函数）
 
     [FIX 2026-01-17] 添加持久化支持：先查内存，再查SQLite
+    [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 
     Args:
         session_id: 会话ID或会话指纹
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
 
     Returns:
         缓存的 signature，如果未命中则返回 None
     """
     # 先查内存缓存
-    result = get_signature_cache().get_session_signature(session_id)
+    result = get_signature_cache().get_session_signature(session_id, owner_id)
     if result:
         return result
 
@@ -1075,8 +1677,8 @@ def get_session_signature(session_id: str) -> Optional[str]:
                 if db_result:
                     signature, thinking_text = db_result
                     log.info(f"[SIGNATURE_CACHE] get_session_signature: 从SQLite恢复, session_id={session_id[:16]}...")
-                    # 回填到内存缓存
-                    get_signature_cache().cache_session_signature(session_id, signature, thinking_text)
+                    # 回填到内存缓存（注意：迁移门面可能需要后续升级以支持 owner_id）
+                    get_signature_cache().cache_session_signature(session_id, signature, thinking_text, owner_id)
                     return signature
             except Exception as e:
                 log.warning(f"[SIGNATURE_CACHE] get_session_signature: SQLite查询失败: {e}")
@@ -1084,20 +1686,25 @@ def get_session_signature(session_id: str) -> Optional[str]:
     return None
 
 
-def get_session_signature_with_text(session_id: str) -> Optional[Tuple[str, str]]:
+def get_session_signature_with_text(
+    session_id: str,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数
+) -> Optional[Tuple[str, str]]:
     """
     通过 Session ID 获取签名及其对应的 thinking 文本（便捷函数）
 
     [FIX 2026-01-17] 添加持久化支持：先查内存，再查SQLite
+    [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 
     Args:
         session_id: 会话ID或会话指纹
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
 
     Returns:
         (signature, thinking_text) 元组，如果未命中则返回 None
     """
     # 先查内存缓存
-    result = get_signature_cache().get_session_signature_with_text(session_id)
+    result = get_signature_cache().get_session_signature_with_text(session_id, owner_id)
     if result:
         return result
 
@@ -1110,8 +1717,8 @@ def get_session_signature_with_text(session_id: str) -> Optional[Tuple[str, str]
                 if db_result:
                     signature, thinking_text = db_result
                     log.info(f"[SIGNATURE_CACHE] get_session_signature_with_text: 从SQLite恢复, session_id={session_id[:16]}...")
-                    # 回填到内存缓存
-                    get_signature_cache().cache_session_signature(session_id, signature, thinking_text)
+                    # 回填到内存缓存（注意：迁移门面可能需要后续升级以支持 owner_id）
+                    get_signature_cache().cache_session_signature(session_id, signature, thinking_text, owner_id)
                     return db_result
             except Exception as e:
                 log.warning(f"[SIGNATURE_CACHE] get_session_signature_with_text: SQLite查询失败: {e}")

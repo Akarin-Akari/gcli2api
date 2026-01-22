@@ -91,7 +91,8 @@ def recover_signature_for_thinking(
     client_signature: Optional[str] = None,
     context_signature: Optional[str] = None,
     session_id: Optional[str] = None,
-    use_placeholder_fallback: bool = True
+    use_placeholder_fallback: bool = True,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 ) -> RecoveryResult:
     """
     为 thinking 块恢复签名（6层策略）
@@ -102,6 +103,7 @@ def recover_signature_for_thinking(
         context_signature: 上下文中的签名
         session_id: 会话ID（用于 Session Cache）
         use_placeholder_fallback: 是否在所有策略失败时使用占位符
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
 
     Returns:
         RecoveryResult: 恢复结果
@@ -130,8 +132,9 @@ def recover_signature_for_thinking(
         )
 
     # 优先级 3: 从缓存恢复（基于 thinking 文本哈希）
+    # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
     if thinking_text:
-        cached_sig = get_cached_signature(thinking_text)
+        cached_sig = get_cached_signature(thinking_text, owner_id)
         if is_valid_signature(cached_sig):
             log.debug(f"[SIGNATURE_RECOVERY] Layer 3: Cached signature found for thinking text")
             return RecoveryResult(
@@ -141,8 +144,9 @@ def recover_signature_for_thinking(
             )
 
     # 优先级 4: Session Cache
+    # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
     if session_id:
-        session_result = get_session_signature_with_text(session_id)
+        session_result = get_session_signature_with_text(session_id, owner_id)
         if session_result:
             sig, text = session_result
             if is_valid_signature(sig):
@@ -186,7 +190,8 @@ def recover_signature_for_tool_use(
     client_signature: Optional[str] = None,
     context_signature: Optional[str] = None,
     session_id: Optional[str] = None,
-    use_placeholder_fallback: bool = True
+    use_placeholder_fallback: bool = True,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
 ) -> RecoveryResult:
     """
     为工具调用恢复签名（6层策略）
@@ -198,6 +203,7 @@ def recover_signature_for_tool_use(
         context_signature: 上下文中的签名
         session_id: 会话ID
         use_placeholder_fallback: 是否在所有策略失败时使用占位符
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
 
     Returns:
         RecoveryResult: 恢复结果
@@ -236,8 +242,9 @@ def recover_signature_for_tool_use(
         )
 
     # 优先级 4: Session Cache
+    # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
     if session_id:
-        session_sig = get_session_signature(session_id)
+        session_sig = get_session_signature(session_id, owner_id)
         if is_valid_signature(session_sig):
             log.debug(f"[SIGNATURE_RECOVERY] Tool Layer 4: Session cache hit for tool_id={tool_id}")
             return RecoveryResult(
@@ -246,7 +253,8 @@ def recover_signature_for_tool_use(
             )
 
     # 优先级 5: Tool Cache
-    tool_sig = get_tool_signature(tool_id)
+    # [FIX 2026-01-22] 传递 owner_id 进行会话隔离
+    tool_sig = get_tool_signature(tool_id, owner_id)
     if is_valid_signature(tool_sig):
         log.debug(f"[SIGNATURE_RECOVERY] Tool Layer 5: Tool cache hit for tool_id={tool_id}")
         return RecoveryResult(

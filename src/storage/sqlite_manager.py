@@ -36,7 +36,12 @@ class SQLiteManager:
             ("rotation_order", "INTEGER DEFAULT 0"),
             ("call_count", "INTEGER DEFAULT 0"),
             ("created_at", "REAL DEFAULT (unixepoch())"),
-            ("updated_at", "REAL DEFAULT (unixepoch())")
+            ("updated_at", "REAL DEFAULT (unixepoch())"),
+            # [FIX 2026-01-21] 健康度评分相关字段
+            ("success_count", "INTEGER DEFAULT 0"),
+            ("failure_count", "INTEGER DEFAULT 0"),
+            ("total_latency_ms", "REAL DEFAULT 0"),
+            ("recent_errors", "TEXT DEFAULT '[]'"),
         ],
         "antigravity_credentials": [
             ("disabled", "INTEGER DEFAULT 0"),
@@ -47,7 +52,12 @@ class SQLiteManager:
             ("rotation_order", "INTEGER DEFAULT 0"),
             ("call_count", "INTEGER DEFAULT 0"),
             ("created_at", "REAL DEFAULT (unixepoch())"),
-            ("updated_at", "REAL DEFAULT (unixepoch())")
+            ("updated_at", "REAL DEFAULT (unixepoch())"),
+            # [FIX 2026-01-21] 健康度评分相关字段
+            ("success_count", "INTEGER DEFAULT 0"),
+            ("failure_count", "INTEGER DEFAULT 0"),
+            ("total_latency_ms", "REAL DEFAULT 0"),
+            ("recent_errors", "TEXT DEFAULT '[]'"),
         ]
     }
 
@@ -162,6 +172,12 @@ class SQLiteManager:
                 rotation_order INTEGER DEFAULT 0,
                 call_count INTEGER DEFAULT 0,
 
+                -- [FIX 2026-01-21] 健康度评分相关字段
+                success_count INTEGER DEFAULT 0,
+                failure_count INTEGER DEFAULT 0,
+                total_latency_ms REAL DEFAULT 0,
+                recent_errors TEXT DEFAULT '[]',
+
                 -- 时间戳
                 created_at REAL DEFAULT (unixepoch()),
                 updated_at REAL DEFAULT (unixepoch())
@@ -187,6 +203,12 @@ class SQLiteManager:
                 -- 轮换相关
                 rotation_order INTEGER DEFAULT 0,
                 call_count INTEGER DEFAULT 0,
+
+                -- [FIX 2026-01-21] 健康度评分相关字段
+                success_count INTEGER DEFAULT 0,
+                failure_count INTEGER DEFAULT 0,
+                total_latency_ms REAL DEFAULT 0,
+                recent_errors TEXT DEFAULT '[]',
 
                 -- 时间戳
                 created_at REAL DEFAULT (unixepoch()),
@@ -272,10 +294,10 @@ class SQLiteManager:
         self, is_antigravity: bool = False, model_key: Optional[str] = None
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """
-        随机获取一个可用凭证（负载均衡）
+        加权随机获取一个可用凭证（智能负载均衡）
         - 未禁用
-        - 如果提供了 model_key，还会检查模型级冷却
-        - 随机选择
+        - 如果提供了 model_key，检查配额并按配额加权选择
+        - [FIX 2026-01-21] 加权负载均衡：配额高的凭证更容易被选中
 
         Args:
             is_antigravity: 是否获取 antigravity 凭证（默认 False）
@@ -297,41 +319,43 @@ class SQLiteManager:
                     SELECT filename, credential_data, model_cooldowns
                     FROM {table_name}
                     WHERE disabled = 0
-                    ORDER BY RANDOM()
                 """) as cursor:
                     rows = await cursor.fetchall()
 
                     # [DEBUG 2026-01-17] 添加调试日志
                     log.debug(f"[SQLite] get_next_available_credential: is_antigravity={is_antigravity}, model_key={model_key}, found {len(rows)} credentials")
 
-                    # 如果没有提供 model_key，使用第一个可用凭证
-                    if not model_key:
-                        if rows:
-                            filename, credential_json, _ = rows[0]
-                            credential_data = json.loads(credential_json)
-                            log.debug(f"[SQLite] Returning credential without model_key check: {filename}")
-                            return filename, credential_data
-                        log.warning(f"[SQLite] No credentials found (model_key=None)")
+                    if not rows:
+                        log.warning(f"[SQLite] No credentials found")
                         return None
 
-                    # [FIX 2026-01-17] 如果提供了 model_key，检查配额百分比而不是冷却时间
-                    # 修复原因：采用 Antigravity-Manager 的正确逻辑
-                    # - 冷却时间不应影响凭证可用性（仅用于统计和日志）
-                    # - 只有配额不足（<20%）时才应标记为不可用
-                    # - 预热机制可以正常工作（冷却期间仍可使用）
-                    # - 使用内存缓存获取配额信息（不修改数据库结构）
+                    # 如果没有提供 model_key，随机选择一个
+                    if not model_key:
+                        import random
+                        filename, credential_json, _ = random.choice(rows)
+                        credential_data = json.loads(credential_json)
+                        log.debug(f"[SQLite] Returning credential without model_key check: {filename}")
+                        return filename, credential_data
+
+                    # [FIX 2026-01-21] 加权负载均衡实现
+                    # 1. 收集所有可用凭证及其配额
+                    # 2. 按配额加权随机选择
                     QUOTA_THRESHOLD = 20  # 配额阈值：20%
 
                     # 导入 fetch_quota_info（使用内存缓存）
                     from ..antigravity_api import fetch_quota_info
+                    import random
+
+                    # 收集可用凭证及其权重
+                    available_credentials: list[tuple[str, dict, float]] = []  # (filename, credential_data, weight)
 
                     for filename, credential_json, model_cooldowns_json in rows:
                         credential_data = json.loads(credential_json)
                         model_cooldowns = json.loads(model_cooldowns_json or '{}')
 
-                        # 检查该模型的配额百分比（而不是冷却时间）
+                        # 检查该模型的配额百分比
                         model_available = False
-                        model_percentage = None
+                        model_percentage = 100.0  # 默认权重
 
                         # 仅对 antigravity 凭证检查配额
                         if is_antigravity:
@@ -363,19 +387,22 @@ class SQLiteManager:
                                         # 获取配额失败，默认可用（避免误判）
                                         log.debug(f"[SQLite] ⚠ {filename}: Failed to fetch quota, assuming available")
                                         model_available = True
+                                        model_percentage = 50.0  # 未知配额给中等权重
                                 else:
                                     # 没有 access_token，默认可用
                                     log.debug(f"[SQLite] ⚠ {filename}: No access_token, assuming available")
                                     model_available = True
+                                    model_percentage = 50.0
                             except Exception as e:
                                 # 异常情况，默认可用（避免误判）
                                 log.warning(f"[SQLite] ⚠ {filename}: Exception while checking quota: {e}, assuming available")
                                 model_available = True
+                                model_percentage = 50.0
                         else:
                             # 非 antigravity 凭证，默认可用（不检查配额）
                             model_available = True
 
-                        # 如果模型可用，返回凭证
+                        # 如果模型可用，加入候选列表
                         if model_available:
                             # 记录冷却信息（仅用于日志，不影响可用性判定）
                             model_cooldown = model_cooldowns.get(model_key)
@@ -383,10 +410,46 @@ class SQLiteManager:
                                 remaining = model_cooldown - current_time
                                 log.debug(f"[SQLite] ℹ {filename}: model_key={model_key} is cooling ({remaining:.1f}s remaining), but still available due to sufficient quota")
 
-                            return filename, credential_data
+                            # [FIX 2026-01-21] 获取健康度评分
+                            health_score = await self.get_credential_health_score(filename, is_antigravity)
 
-                    log.warning(f"[SQLite] All {len(rows)} credentials have insufficient quota (<{QUOTA_THRESHOLD}%) for model_key={model_key}")
-                    return None
+                            available_credentials.append((filename, credential_data, model_percentage, health_score))
+
+                    # 如果没有可用凭证
+                    if not available_credentials:
+                        log.warning(f"[SQLite] All {len(rows)} credentials have insufficient quota (<{QUOTA_THRESHOLD}%) for model_key={model_key}")
+                        return None
+
+                    # [FIX 2026-01-21] 加权随机选择
+                    # 综合权重 = 配额百分比 * 0.6 + 健康度评分 * 0.4
+                    if len(available_credentials) == 1:
+                        # 只有一个可用，直接返回
+                        filename, credential_data, quota, health = available_credentials[0]
+                        log.debug(f"[SQLite] Only one available credential: {filename} (quota={quota:.1f}%, health={health:.1f})")
+                        return filename, credential_data
+
+                    # 计算综合权重
+                    weights = []
+                    for cred in available_credentials:
+                        quota_weight = max(cred[2], 1.0)  # 配额权重
+                        health_weight = max(cred[3], 1.0)  # 健康度权重
+                        # 综合权重 = 配额 * 0.6 + 健康度 * 0.4
+                        combined_weight = quota_weight * 0.6 + health_weight * 0.4
+                        weights.append(combined_weight)
+
+                    total_weight = sum(weights)
+
+                    # 使用 random.choices 进行加权随机选择
+                    selected = random.choices(available_credentials, weights=weights, k=1)[0]
+                    filename, credential_data, quota, health = selected
+                    selected_weight = quota * 0.6 + health * 0.4
+
+                    log.debug(
+                        f"[SQLite] Weighted selection: {filename} (quota={quota:.1f}%, health={health:.1f}, "
+                        f"combined={selected_weight:.1f}, probability={selected_weight/total_weight*100:.1f}%, "
+                        f"candidates={len(available_credentials)})"
+                    )
+                    return filename, credential_data
 
         except Exception as e:
             log.error(f"Error getting next available credential (antigravity={is_antigravity}, model_key={model_key}): {e}")
@@ -414,6 +477,152 @@ class SQLiteManager:
         except Exception as e:
             log.error(f"Error getting available credentials list: {e}")
             return []
+
+    # ============ [FIX 2026-01-21] 健康度评分系统 ============
+
+    async def record_request_result(
+        self,
+        filename: str,
+        success: bool,
+        latency_ms: float = 0,
+        error_code: Optional[int] = None,
+        is_antigravity: bool = False,
+    ) -> bool:
+        """
+        记录请求结果，用于计算健康度评分
+
+        Args:
+            filename: 凭证文件名
+            success: 请求是否成功
+            latency_ms: 请求延迟（毫秒）
+            error_code: 错误码（如果失败）
+            is_antigravity: 是否为 antigravity 凭证
+
+        Returns:
+            是否记录成功
+        """
+        self._ensure_initialized()
+
+        try:
+            table_name = self._get_table_name(is_antigravity)
+            async with aiosqlite.connect(self._db_path) as db:
+                if success:
+                    # 成功：增加成功计数，累加延迟
+                    await db.execute(f"""
+                        UPDATE {table_name}
+                        SET success_count = success_count + 1,
+                            total_latency_ms = total_latency_ms + ?,
+                            last_success = ?,
+                            updated_at = ?
+                        WHERE filename = ?
+                    """, (latency_ms, time.time(), time.time(), filename))
+                else:
+                    # 失败：增加失败计数，记录错误
+                    current_time = time.time()
+
+                    # 获取当前的 recent_errors
+                    async with db.execute(f"""
+                        SELECT recent_errors FROM {table_name} WHERE filename = ?
+                    """, (filename,)) as cursor:
+                        row = await cursor.fetchone()
+                        if row:
+                            recent_errors = json.loads(row[0] or '[]')
+                        else:
+                            recent_errors = []
+
+                    # 添加新错误，保留最近 10 个
+                    recent_errors.append({
+                        "code": error_code,
+                        "time": current_time
+                    })
+                    if len(recent_errors) > 10:
+                        recent_errors = recent_errors[-10:]
+
+                    await db.execute(f"""
+                        UPDATE {table_name}
+                        SET failure_count = failure_count + 1,
+                            recent_errors = ?,
+                            updated_at = ?
+                        WHERE filename = ?
+                    """, (json.dumps(recent_errors), current_time, filename))
+
+                await db.commit()
+                return True
+
+        except Exception as e:
+            log.error(f"Error recording request result for {filename}: {e}")
+            return False
+
+    async def get_credential_health_score(
+        self,
+        filename: str,
+        is_antigravity: bool = False,
+    ) -> float:
+        """
+        计算凭证的健康度评分
+
+        评分公式：
+        health_score = (成功率 * 0.4) + (配额权重 * 0.3) + (延迟权重 * 0.2) + (最近错误权重 * 0.1)
+
+        Returns:
+            健康度评分 (0-100)
+        """
+        self._ensure_initialized()
+
+        try:
+            table_name = self._get_table_name(is_antigravity)
+            async with aiosqlite.connect(self._db_path) as db:
+                async with db.execute(f"""
+                    SELECT success_count, failure_count, total_latency_ms, recent_errors
+                    FROM {table_name}
+                    WHERE filename = ?
+                """, (filename,)) as cursor:
+                    row = await cursor.fetchone()
+                    if not row:
+                        return 50.0  # 默认中等分数
+
+                    success_count = row[0] or 0
+                    failure_count = row[1] or 0
+                    total_latency_ms = row[2] or 0
+                    recent_errors = json.loads(row[3] or '[]')
+
+                    # 1. 成功率 (0-100)
+                    total_requests = success_count + failure_count
+                    if total_requests > 0:
+                        success_rate = (success_count / total_requests) * 100
+                    else:
+                        success_rate = 100  # 没有请求记录，假设完美
+
+                    # 2. 延迟权重 (0-100)，延迟越低分数越高
+                    if success_count > 0:
+                        avg_latency = total_latency_ms / success_count
+                        # 假设 1000ms 是基准，超过 5000ms 得 0 分
+                        latency_score = max(0, 100 - (avg_latency / 50))
+                    else:
+                        latency_score = 50  # 没有数据，给中等分
+
+                    # 3. 最近错误权重 (0-100)，错误越少分数越高
+                    # 只考虑最近 5 分钟内的错误
+                    current_time = time.time()
+                    recent_error_count = sum(
+                        1 for e in recent_errors
+                        if current_time - e.get("time", 0) < 300
+                    )
+                    recent_error_score = max(0, 100 - (recent_error_count * 20))
+
+                    # 4. 综合评分（配额权重在选择时单独处理）
+                    # 这里只计算基于历史数据的健康度
+                    health_score = (
+                        success_rate * 0.5 +
+                        latency_score * 0.3 +
+                        recent_error_score * 0.2
+                    )
+
+                    return min(100, max(0, health_score))
+
+        except Exception as e:
+            log.error(f"Error calculating health score for {filename}: {e}")
+            return 50.0  # 出错时返回中等分数
 
     async def check_and_clear_cooldowns(self) -> int:
         """
@@ -991,6 +1200,45 @@ class SQLiteManager:
 
         except Exception as e:
             log.error(f"Error setting model cooldown for {filename}: {e}")
+            return False
+
+    async def clear_all_model_cooldowns(
+        self,
+        filename: str,
+        is_antigravity: bool = False
+    ) -> bool:
+        """
+        清除指定凭证的所有模型级冷却
+
+        [FIX 2026-01-22] 用于凭证检验/projectID切换后，完全重置冷却状态。
+        解决偶发限流问题：检验功能切换projectID后，内部冷却状态未清除导致的问题。
+
+        Args:
+            filename: 凭证文件名
+            is_antigravity: 是否为 antigravity 凭证
+
+        Returns:
+            是否成功
+        """
+        self._ensure_initialized()
+
+        try:
+            table_name = self._get_table_name(is_antigravity)
+            async with aiosqlite.connect(self._db_path) as db:
+                # 直接将 model_cooldowns 设置为空字典
+                await db.execute(f"""
+                    UPDATE {table_name}
+                    SET model_cooldowns = '{{}}',
+                        updated_at = unixepoch()
+                    WHERE filename = ?
+                """, (filename,))
+                await db.commit()
+
+                log.info(f"[SQLite] Cleared all model cooldowns for credential: {filename} (is_antigravity={is_antigravity})")
+                return True
+
+        except Exception as e:
+            log.error(f"Error clearing all model cooldowns for {filename}: {e}")
             return False
 
     async def clear_expired_model_cooldowns(self, is_antigravity: bool = False) -> int:

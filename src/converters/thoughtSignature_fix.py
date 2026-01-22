@@ -121,7 +121,10 @@ def has_valid_thoughtsignature(block: Dict[str, Any]) -> bool:
         return True  # 非 thinking 块默认有效
 
     thinking = block.get("thinking", "")
-    thoughtsignature = block.get("thoughtSignature")
+    # [FIX 2026-01-20] 兼容两种签名字段名：thoughtSignature 和 signature
+    # 问题：normalize_content 使用 "signature" 字段名，但这里只检查 "thoughtSignature"
+    # 这会导致签名验证失败，进而触发 Claude API 400 错误
+    thoughtsignature = block.get("thoughtSignature") or block.get("signature")
 
     # 空 thinking + 任意 thoughtsignature = 有效 (trailing signature case)
     if not thinking and thoughtsignature is not None:
@@ -157,7 +160,10 @@ def sanitize_thinking_block(block: Dict[str, Any]) -> Dict[str, Any]:
         "thinking": block.get("thinking", "")
     }
 
-    thoughtsignature = block.get("thoughtSignature")
+    # [FIX 2026-01-20] 兼容两种签名字段名：thoughtSignature 和 signature
+    # 问题：normalize_content 使用 "signature" 字段名，但这里只检查 "thoughtSignature"
+    # 这会导致签名丢失，进而触发 Claude API 400 错误
+    thoughtsignature = block.get("thoughtSignature") or block.get("signature")
     if thoughtsignature:
         sanitized["thoughtSignature"] = thoughtsignature
 

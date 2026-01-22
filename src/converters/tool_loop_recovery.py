@@ -231,44 +231,19 @@ def close_tool_loop_for_thinking(messages: List[Dict]) -> bool:
             f"pending tool results"
         )
 
-        # [FIX 2026-01-17] 关键修复：在原始 assistant 消息中注入 thinking 块
-        # 这样可以确保 tool_use 块有签名上下文（Layer 2 能够命中）
-        # 问题：之前只在末尾追加合成消息，但原始 assistant 消息中的 tool_use 块仍然没有 thinking 块
-        # 解决：从缓存中恢复签名，在原始 assistant 消息的 content 开头插入 thinking 块
-        assistant_msg = messages[state.last_assistant_index]
-
-        # 从缓存中恢复签名
-        try:
-            from src.signature_cache import get_last_signature_with_text
-            last_result = get_last_signature_with_text()
-
-            if last_result:
-                signature, thinking_text = last_result
-
-                # 在 content 数组开头插入 thinking 块
-                content = assistant_msg.get("content", [])
-                if isinstance(content, list):
-                    thinking_block = {
-                        "type": "thinking",
-                        "thinking": thinking_text,
-                        "signature": signature
-                    }
-                    content.insert(0, thinking_block)
-                    assistant_msg["content"] = content
-
-                    logger.info(
-                        f"Tool loop recovery: injected thinking block with signature "
-                        f"(thinking_len={len(thinking_text)}, sig_len={len(signature)})"
-                    )
-            else:
-                logger.warning(
-                    "Tool loop recovery: no cached signature available, "
-                    "tool_use blocks will rely on Layer 4-6 for signature recovery"
-                )
-        except ImportError:
-            logger.warning("Tool loop recovery: signature_cache module not available")
-        except Exception as e:
-            logger.warning(f"Tool loop recovery: failed to inject thinking block: {e}")
+        # [FIX 2026-01-20] 根据 Claude 官方文档，thinking signature 是「会话绑定」的
+        # 任何尝试从缓存恢复 signature 并注入 thinking block 的做法都会导致 400 错误
+        # 原因: Signature 是针对特定 API 请求生成的，跨请求复用会被拒绝
+        # 
+        # 正确策略: 不尝试注入 thinking block，让请求正常发送
+        # Claude API 会在新响应中生成新的 thinking block（如果 thinking 模式启用）
+        # 
+        # 旧代码尝试用 get_last_signature_with_text() 从缓存恢复 thinking block
+        # 但这会导致 400 错误，因此已删除。
+        logger.info(
+            "Tool loop recovery: skipping thinking block injection "
+            "(signatures are session-bound and cannot be reused)"
+        )
 
         # [FIX 2026-01-17] 移除合成消息注入！
         # 问题：之前注入的 [Proceed] User 消息会被 Claude Code 当作新的用户输入

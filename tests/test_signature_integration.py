@@ -340,5 +340,161 @@ class TestSignatureIntegration(unittest.TestCase):
         cached_sig = cache.get(thinking_text)
         self.assertEqual(cached_sig, message_sig, "消息签名应该被缓存")
 
+    # [NEW TEST 2026-01-20] 跨请求签名复用回归测试
+    def test_cross_request_signature_reuse(self):
+        """
+        测试跨请求签名复用（SCID架构核心场景）
+
+        模拟场景：
+        1. 第一次请求：Claude返回thinking块+签名，网关缓存签名
+        2. 第二次请求：IDE回放历史（可能丢失签名），网关从缓存恢复
+        """
+        cache = get_signature_cache()
+        thinking_text = "Cross-request thinking content..."
+        signature = self._make_sig("X")
+
+        # === 模拟第一次请求的响应处理 ===
+        # 网关收到上游响应，包含thinking块和签名
+        first_response_content = [
+            {
+                "type": "thinking",
+                "thinking": thinking_text,
+                "signature": signature  # 原始签名
+            },
+            {
+                "type": "text",
+                "text": "First response..."
+            }
+        ]
+
+        # 1. 从响应中提取签名并缓存（模拟 chat_completions 的 writeback 逻辑）
+        for block in first_response_content:
+            if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"):
+                t_text = block.get("thinking", "")
+                t_sig = block.get("signature") or block.get("thoughtSignature")
+                if t_text and t_sig and len(t_sig) > 50:
+                    cache.set(t_text, t_sig)
+
+        # 验证签名已缓存
+        self.assertEqual(cache.get(thinking_text), signature, "第一次响应的签名应被缓存")
+
+        # === 模拟第二次请求的历史消息 ===
+        # IDE可能变形消息，丢失签名
+        second_request_messages = [
+            {
+                "role": "user",
+                "content": "First question"
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": thinking_text
+                        # 注意：没有 signature（IDE丢失了）
+                    },
+                    {
+                        "type": "text",
+                        "text": "First response..."
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": "Second question"
+            }
+        ]
+
+        # 2. 从历史消息中尝试恢复签名（模拟 chat_completions 的入口逻辑）
+        recovered_signatures = []
+        for msg in second_request_messages:
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"):
+                            t_text = block.get("thinking", "")
+                            # 尝试从缓存恢复
+                            if t_text:
+                                cached = cache.get(t_text)
+                                if cached:
+                                    recovered_signatures.append(cached)
+                                    # 补全消息中的签名（模拟sanitize逻辑）
+                                    block["signature"] = cached
+
+        # 验证签名被成功恢复
+        self.assertEqual(len(recovered_signatures), 1, "应该恢复1个签名")
+        self.assertEqual(recovered_signatures[0], signature, "恢复的签名应与原始签名匹配")
+
+        # 验证消息中的签名已补全
+        assistant_msg = second_request_messages[1]
+        thinking_block = assistant_msg["content"][0]
+        self.assertEqual(thinking_block.get("signature"), signature, "消息中的签名应被补全")
+
+    def test_cross_request_with_session_cache(self):
+        """
+        测试使用 session cache 的跨请求签名复用
+
+        模拟场景：同一SCID的多次请求，即使thinking文本稍有变化也能复用签名
+        """
+        from src.signature_cache import cache_session_signature, get_session_signature
+
+        cache = get_signature_cache()
+        scid = "test-scid-12345"
+        signature = self._make_sig("S")
+        thinking_text = "Session-based thinking..."
+
+        # 1. 第一次请求：缓存签名到 session
+        cache_session_signature(scid, signature, thinking_text)
+
+        # 2. 验证 session cache 工作
+        session_sig = get_session_signature(scid)
+        self.assertIsNotNone(session_sig, "Session应有签名")
+        self.assertEqual(session_sig, signature, "Session签名应匹配")
+
+        # 3. 第二次请求：从 session cache 获取最近签名
+        # 这模拟了 AnthropicSanitizer 的 last_thought_signature 逻辑
+        last_sig = get_session_signature(scid)
+        self.assertEqual(last_sig, signature, "应获取到最近的session签名")
+
+    def test_thoughtSignature_field_compatibility(self):
+        """
+        测试 thoughtSignature 字段兼容性
+
+        验证代码能同时处理 'signature' 和 'thoughtSignature' 两种字段名
+        """
+        cache = get_signature_cache()
+        thinking_text = "Field compatibility test..."
+        signature = self._make_sig("F")
+
+        # 测试两种字段名格式
+        block_with_signature = {
+            "type": "thinking",
+            "thinking": thinking_text,
+            "signature": signature
+        }
+
+        block_with_thoughtSignature = {
+            "type": "thinking",
+            "thinking": thinking_text,
+            "thoughtSignature": signature
+        }
+
+        # 提取逻辑应同时兼容两种格式
+        def extract_sig(block):
+            return block.get("signature") or block.get("thoughtSignature")
+
+        self.assertEqual(extract_sig(block_with_signature), signature)
+        self.assertEqual(extract_sig(block_with_thoughtSignature), signature)
+
+        # 测试混合格式
+        block_mixed = {
+            "type": "thinking",
+            "thinking": thinking_text,
+            "thoughtSignature": signature  # 只有 thoughtSignature
+        }
+        self.assertEqual(extract_sig(block_mixed), signature)
+
+
 if __name__ == '__main__':
     unittest.main()

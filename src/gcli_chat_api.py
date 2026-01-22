@@ -33,7 +33,7 @@ from src.utils import (
 from log import log
 
 from .credential_manager import CredentialManager
-from .httpx_client import create_streaming_client_with_kwargs, http_client
+from .httpx_client import create_streaming_client_with_kwargs, http_client, safe_close_client
 from .utils import get_user_agent, parse_quota_reset_timestamp
 
 
@@ -353,7 +353,7 @@ async def send_gemini_request(
                         finally:
                             try:
                                 if client:
-                                    await client.aclose()
+                                    await safe_close_client(client)
                             except Exception as cleanup_err:
                                 log.debug(f"Error closing client: {cleanup_err}")
 
@@ -651,6 +651,10 @@ def _handle_streaming_response_managed(
         return_thoughts = await get_return_thoughts_to_frontend()  # 获取配置
         try:
             async for chunk in resp.aiter_lines():
+                # ✅ [FIX 2026-01-22] 修复类型错误：处理 bytes 和 str 两种类型
+                if isinstance(chunk, bytes):
+                    chunk = chunk.decode("utf-8", errors="ignore")
+                
                 if not chunk or not chunk.startswith("data: "):
                     continue
 

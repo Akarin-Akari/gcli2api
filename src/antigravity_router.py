@@ -14,7 +14,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from config import get_anti_truncation_max_attempts
 from log import log
-from .signature_cache import get_cached_signature, cache_signature, get_last_signature_with_text, cache_tool_signature, cache_session_signature, generate_session_fingerprint
+from .signature_cache import (
+    get_cached_signature, cache_signature, get_last_signature_with_text,
+    cache_tool_signature, cache_session_signature, generate_session_fingerprint,
+    # [FIX 2026-01-21] Phase 2 增强恢复函数
+    get_session_signature_multi_level, get_tool_signature_fuzzy, get_recent_signature,
+    get_ttl_for_client
+)
 from src.utils import is_anti_truncation_model, authenticate_bearer, authenticate_gemini_flexible, authenticate_sdwebui_flexible
 
 from .antigravity_api import (
@@ -23,6 +29,7 @@ from .antigravity_api import (
     send_antigravity_request_stream,
     fetch_available_models,
 )
+from .httpx_client import safe_close_client
 from .credential_manager import CredentialManager
 from .models import (
     ChatCompletionRequest,
@@ -59,6 +66,11 @@ from .converters import (
     # tool_converter (validation)
     validate_tool_name,
 )
+
+# [FIX 2026-01-20] 导入签名编码函数用于CLI工具的签名保留
+from .converters.thoughtSignature_fix import encode_tool_id_with_signature
+from .converters.model_config import get_model_family
+from .converters.thoughtSignature_fix import MIN_SIGNATURE_LENGTH, SKIP_SIGNATURE_VALIDATOR
 
 # 导入自定义功能模块
 from .stream_error_handler import (
@@ -116,6 +128,66 @@ async def get_credential_manager():
         credential_manager = CredentialManager()
         await credential_manager.initialize()
     return credential_manager
+
+
+# ====================== 增强签名恢复 (Phase 2) ======================
+
+
+def recover_signature_enhanced(
+    thinking_text: str,
+    messages: Optional[List[Dict]] = None,
+    client_type: Optional[str] = None,
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id 参数，用于多客户端会话隔离
+) -> Optional[str]:
+    """
+    增强的签名恢复函数
+
+    [FIX 2026-01-21] Phase 2 集成：多层恢复策略
+    [FIX 2026-01-22] 新增 owner_id 参数，阻止跨用户签名污染
+
+    按优先级尝试多种恢复方式：
+    1. Layer 1: 精确匹配 (get_cached_signature)
+    2. Layer 2: 多级 Session 指纹 (get_session_signature_multi_level)
+    3. Layer 3: 时间窗口 Fallback (get_recent_signature) - 受 owner_id 隔离保护
+
+    Args:
+        thinking_text: thinking 块的文本内容
+        messages: 消息列表（用于 Session 指纹恢复）
+        client_type: 客户端类型（用于时间窗口计算）
+        owner_id: 可选的所有者ID，用于多客户端会话隔离
+
+    Returns:
+        恢复的签名，如果都未命中则返回 None
+    """
+    # Layer 1: 精确匹配
+    # [FIX 2026-01-22] 传递 owner_id 进行隔离过滤
+    cached_sig = get_cached_signature(thinking_text, owner_id)
+    if cached_sig:
+        log.debug(f"[SIGNATURE_RECOVERY] Layer 1 命中: 精确匹配 (owner={owner_id[:8] if owner_id else 'None'}...)")
+        return cached_sig
+
+    # Layer 2: 多级 Session 指纹（如果有 messages）
+    if messages:
+        multi_level_sig = get_session_signature_multi_level(messages)
+        if multi_level_sig:
+            log.info(f"[SIGNATURE_RECOVERY] Layer 2 命中: 多级 Session 指纹")
+            return multi_level_sig
+
+    # Layer 3: 时间窗口 Fallback
+    # [FIX 2026-01-22] 传递 owner_id 进行隔离过滤，阻止跨用户污染
+    # 对于 Cursor/Windsurf，使用更长的时间窗口
+    time_window = 300  # 默认 5 分钟
+    if client_type:
+        client_ttl = get_ttl_for_client(client_type)
+        time_window = client_ttl // 2  # 使用 TTL 的一半作为时间窗口
+
+    recent_sig = get_recent_signature(time_window_seconds=time_window, client_type=client_type, owner_id=owner_id)
+    if recent_sig:
+        log.info(f"[SIGNATURE_RECOVERY] Layer 3 命中: 时间窗口 Fallback (window={time_window}s, owner={owner_id[:8] if owner_id else 'None'}...)")
+        return recent_sig
+
+    log.warning(f"[SIGNATURE_RECOVERY] 所有恢复层都未命中: thinking_len={len(thinking_text)}, owner={owner_id[:8] if owner_id else 'None'}...")
+    return None
 
 
 # ====================== 工具调用验证 ======================
@@ -241,13 +313,20 @@ def validate_tool_call_result(
     return True, "Valid tool result"
 
 
-def convert_to_openai_tool_call(function_call: Dict[str, Any], index: int = None) -> Dict[str, Any]:
+def convert_to_openai_tool_call(
+    function_call: Dict[str, Any],
+    index: int = None,
+    signature: Optional[str] = None,
+    encode_signature: bool = False
+) -> Dict[str, Any]:
     """
     将 Antigravity functionCall 转换为 OpenAI tool_call，使用 OpenAIToolCall 模型
 
     Args:
         function_call: Antigravity 格式的函数调用
         index: 工具调用索引（流式响应必需）
+        signature: thoughtSignature（可选，用于编码到tool_id中）
+        encode_signature: 是否将签名编码到tool_id中（仅CLI工具启用）
     """
     # [FIX 2026-01-12] 使用哈希生成确定性 ID，解决流式传输 ID 不一致导致客户端卡顿问题
     # 问题：随机 UUID 导致每个 chunk 的 tool_call.id 不同，客户端无法拼接
@@ -259,9 +338,18 @@ def convert_to_openai_tool_call(function_call: Dict[str, Any], index: int = None
     hash_object = hashlib.md5(unique_string.encode())
     stable_call_id = f"call_{hash_object.hexdigest()[:24]}"
 
+    # 优先使用已有 ID，否则使用哈希 ID
+    base_tool_id = function_call.get("id", stable_call_id)
+
+    # [FIX 2026-01-20] 对CLI工具将签名编码到tool_id中，以便往返保留
+    final_tool_id = base_tool_id
+    if encode_signature and signature:
+        final_tool_id = encode_tool_id_with_signature(base_tool_id, signature)
+        log.debug(f"[SIGNATURE_ENCODE] Encoded signature into tool_id: {base_tool_id} -> {final_tool_id[:50]}...")
+
     tool_call = OpenAIToolCall(
         index=index,
-        id=function_call.get("id", stable_call_id),  # 优先使用已有 ID，否则使用哈希 ID
+        id=final_tool_id,
         type="function",
         function=OpenAIToolFunction(
             name=func_name,
@@ -285,7 +373,9 @@ async def convert_antigravity_stream_to_openai(
     credential_name: str,
     request_body: Optional[Dict[str, Any]] = None,  # ✅ 新增：用于获取上下文信息
     cred_mgr: Optional[Any] = None,  # ✅ 新增：用于 fallback（未来可能使用）
-    context_info: Optional[Dict[str, Any]] = None  # ✅ 新增：上下文信息（token 数、工具结果数量等）
+    context_info: Optional[Dict[str, Any]] = None,  # ✅ 新增：上下文信息（token 数、工具结果数量等）
+    client_type: str = "unknown",  # [FIX 2026-01-20] 客户端类型，用于决定是否编码签名
+    owner_id: Optional[str] = None  # [FIX 2026-01-22] 新增 owner_id，用于多客户端会话隔离
 ):
     """
     将 Antigravity 流式响应转换为 OpenAI 格式的 SSE 流
@@ -314,6 +404,16 @@ async def convert_antigravity_stream_to_openai(
         "current_thinking_signature": "",  # 当前 thinking block 的 signature
         "session_id": None,  # 会话ID，用于 Session Cache
     }
+
+    # [FIX 2026-01-20] 判断是否应该对此客户端编码签名到tool_id
+    # 只对CLI工具（如claude_code, cline, aider, continue_dev）启用签名编码
+    # IDE工具（如cursor, windsurf）不启用，避免兼容性问题
+    CLI_CLIENTS_FOR_SIGNATURE_ENCODING = {"claude_code", "cline", "aider", "continue_dev", "openai_api"}
+    should_encode_signature = client_type in CLI_CLIENTS_FOR_SIGNATURE_ENCODING
+    if should_encode_signature:
+        log.info(f"[SIGNATURE_ENCODE] Signature encoding ENABLED for client: {client_type}")
+    else:
+        log.debug(f"[SIGNATURE_ENCODE] Signature encoding DISABLED for client: {client_type}")
 
     # 生成 session_id（基于请求特征）
     if request_body:
@@ -356,7 +456,8 @@ async def convert_antigravity_stream_to_openai(
                 success = cache_signature(
                     state["current_thinking_text"],
                     state["current_thinking_signature"],
-                    model=model
+                    model=model,
+                    owner_id=owner_id  # [FIX 2026-01-22] 传递 owner_id 用于会话隔离
                 )
                 if success:
                     log.info(f"[SIGNATURE_CACHE] Antigravity 流式响应缓存写入成功: "
@@ -388,6 +489,10 @@ async def convert_antigravity_stream_to_openai(
             return thinking_block
 
         async for line in lines_generator:
+            # ✅ [FIX 2026-01-22] 修复类型错误：处理 bytes 和 str 两种类型
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="ignore")
+            
             if not line or not line.startswith("data: "):
                 continue
 
@@ -491,6 +596,18 @@ async def convert_antigravity_stream_to_openai(
                         log.info(f"[SIGNATURE_CACHE] 从 part 提取到 thoughtSignature: "
                                 f"len={len(thought_signature)}, thinking_started={state['thinking_started']}, "
                                 f"part_keys={list(part.keys())}")
+
+                        # [FIX 2026-01-20] 当签名在 thinking_started=False 时到达，立即缓存到 Session Cache
+                        # 问题：如果签名在没有 thought=true 的 part 中到达，current_thinking_text 为空
+                        # 导致 flush_thinking_buffer() 中的缓存写入条件失败
+                        # 解决：立即将签名缓存到 Session Cache，确保后续请求可以恢复
+                        if not state["thinking_started"] and state.get("session_id"):
+                            try:
+                                cache_session_signature(state["session_id"], thought_signature)
+                                log.info(f"[SIGNATURE_CACHE] 签名立即缓存到 Session Cache: "
+                                        f"session_id={state['session_id'][:16]}..., sig_len={len(thought_signature)}")
+                            except Exception as e:
+                                log.warning(f"[SIGNATURE_CACHE] Session Cache 写入失败: {e}")
 
                 # 处理思考内容
                 if part.get("thought") is True:
@@ -609,7 +726,13 @@ async def convert_antigravity_stream_to_openai(
                         fc = fixed_fc
                     
                     log.info(f"[ANTIGRAVITY STREAM] Tool call detected: name={fc.get('name')}, id={fc.get('id')}")
-                    tool_call = convert_to_openai_tool_call(fc, index=tool_index)
+                    # [FIX 2026-01-20] 对CLI工具将签名编码到tool_id中
+                    tool_call = convert_to_openai_tool_call(
+                        fc,
+                        index=tool_index,
+                        signature=state.get("current_thinking_signature"),
+                        encode_signature=should_encode_signature
+                    )
                     state["tool_calls"].append(tool_call)
                     state["has_valid_content"] = True  # 收到了有效的工具调用
                     log.debug(f"[ANTIGRAVITY STREAM] Converted tool_call: {json.dumps(tool_call)[:200]}")
@@ -1205,6 +1328,38 @@ async def convert_antigravity_stream_to_openai(
                          f"total_chars={state['total_thinking_chars']}, "
                          f"avg_chars_per_chunk={avg_thinking_chars:.1f}")
 
+        # ========== [NEW 2026-01-22] Token 统计记录 ==========
+        try:
+            from src import token_stats
+            # 从 state 中提取 usage 信息（在流的过程中已经收集）
+            prompt_token_count = state.get("prompt_token_count", 0)
+            # 注意：流式响应中没有 candidatesTokenCount，需要从最后的 chunk 中提取
+            # 但为了简化，我们先记录 input tokens，output tokens 可以后续优化
+            if prompt_token_count > 0:
+                # 获取凭证信息
+                from src.credential_manager import CredentialManager
+                if credential_manager and credential_name:
+                    try:
+                        cred_data = await credential_manager.get_credential_data(credential_name)
+                        account_email = cred_data.get("email", "unknown") if cred_data else "unknown"
+                    except Exception:
+                        account_email = "unknown"
+                else:
+                    account_email = "unknown"
+
+                # 记录 token 用量（output tokens 暂时设为 0，后续可以优化）
+                await token_stats.record_usage(
+                    account_email=account_email,
+                    model=model,
+                    input_tokens=prompt_token_count,
+                    output_tokens=0,  # 流式响应中暂时无法准确获取
+                    credential_file=credential_name,
+                    is_antigravity=True
+                )
+        except Exception as e:
+            log.warning(f"[TOKEN_STATS] Failed to record usage: {e}")
+        # ========== Token 统计记录结束 ==========
+
         # 发送结束标记
         log.info(f"[ANTIGRAVITY STREAM] Stream ending. SSE lines: {state['sse_lines_received']}, Chunks sent: {state['chunks_sent']}, Content buffer: {len(state['content_buffer'])}, Tool calls: {len(state['tool_calls'])}, has_valid_content: {state.get('has_valid_content', False)}, empty_parts_count: {state.get('empty_parts_count', 0)}, finish_reason_sent: {state.get('finish_reason_sent', False)}")
         yield "data: [DONE]\n\n"
@@ -1237,7 +1392,7 @@ async def convert_antigravity_stream_to_openai(
         except Exception as e:
             log.debug(f"[ANTIGRAVITY] Error closing stream context: {e}")
         try:
-            await client.aclose()
+            await safe_close_client(client)
         except Exception as e:
             log.debug(f"[ANTIGRAVITY] Error closing client: {e}")
 
@@ -1369,6 +1524,10 @@ async def convert_antigravity_stream_to_gemini(
 
     try:
         async for line in lines_generator:
+            # ✅ [FIX 2026-01-22] 修复类型错误：处理 bytes 和 str 两种类型
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="ignore")
+            
             if not line or not line.startswith("data: "):
                 continue
 
@@ -1408,7 +1567,7 @@ async def convert_antigravity_stream_to_gemini(
         except Exception as e:
             log.debug(f"[ANTIGRAVITY GEMINI] Error closing stream context: {e}")
         try:
-            await client.aclose()
+            await safe_close_client(client)
         except Exception as e:
             log.debug(f"[ANTIGRAVITY GEMINI] Error closing client: {e}")
 
@@ -1512,6 +1671,13 @@ async def chat_completions(
         log.info(f"[ANTIGRAVITY] Cross-pool fallback ENABLED for {client_info['name']}")
     else:
         log.debug(f"[ANTIGRAVITY] Cross-pool fallback DISABLED for {client_info['name']}")
+
+    # [FIX 2026-01-22] 生成 owner_id 用于多客户端会话隔离
+    # 使用 token 的 MD5 哈希作为 owner_id，确保同一 token 的请求共享签名缓存
+    import hashlib
+    owner_id = hashlib.md5(token.encode()).hexdigest() if token else None
+    if owner_id:
+        log.debug(f"[ANTIGRAVITY] Session isolation owner_id={owner_id[:8]}...")
 
     # 获取原始请求数据
     try:
@@ -1773,8 +1939,8 @@ async def chat_completions(
                         # 提取 <think> 标签内的内容
                         thinking_content = think_match.group(1).strip()
                         if thinking_content:
-                            # 尝试从缓存恢复 signature
-                            cached_sig = get_cached_signature(thinking_content)
+                            # [FIX 2026-01-21] 使用增强恢复函数
+                            cached_sig = recover_signature_enhanced(thinking_content, messages, client_type, owner_id)
                             if cached_sig:
                                 # [Part 5] 缓存命中，保持 all_thinking_valid = True（无需设置）
                                 log.info(f"[ANTIGRAVITY] 从 <think> 标签内容恢复 signature（字符串格式）: thinking_len={len(thinking_content)}")
@@ -1802,8 +1968,8 @@ async def chat_completions(
                                         # 提取 <think> 标签内的内容
                                         thinking_content = think_match.group(1).strip()
                                         if thinking_content:
-                                            # 尝试从缓存恢复 signature
-                                            cached_sig = get_cached_signature(thinking_content)
+                                            # [FIX 2026-01-21] 使用增强恢复函数
+                                            cached_sig = recover_signature_enhanced(thinking_content, messages, client_type, owner_id)
                                             if cached_sig:
                                                 # [Part 5] 缓存命中，保持 all_thinking_valid = True（无需设置）
                                                 log.info(f"[ANTIGRAVITY] 从 <think> 标签内容恢复 signature（数组格式 text 项）: thinking_len={len(thinking_content)}")
@@ -1826,7 +1992,8 @@ async def chat_completions(
                                 message_signature = item.get("signature", "")
 
                                 if thinking_text:
-                                    cached_sig = get_cached_signature(thinking_text)
+                                    # [FIX 2026-01-21] 使用增强恢复函数
+                                    cached_sig = recover_signature_enhanced(thinking_text, messages, client_type, owner_id)
                                     if cached_sig:
                                         # 缓存命中，使用缓存的 signature
                                         item["signature"] = cached_sig
@@ -1857,16 +2024,26 @@ async def chat_completions(
         # [FIX 2026-01-09] 在禁用之前，先尝试使用最近缓存的 signature 作为 fallback
         # [FIX 2026-01-09 Part 5] 使用 any_thinking_found 和 all_thinking_valid 替代旧变量
         # 以正确处理多工具调用场景（一条消息中有多个 thinking block）
+        #
+        # [FIX 2026-01-20] 根据 Claude 官方文档重新设计策略：
+        # 官方文档明确说明：历史 thinking blocks 可以省略，API 会自动过滤它们。
+        # 因此，我们信任 Sanitizer 清理无效的历史 thinking blocks，而不是在这里禁用 thinking 模式。
+        #
+        # [FIX 2026-01-21] 问题修复：Sanitizer 可能未被调用或未正确处理某些格式
+        # 当检测到无效 thinking blocks 时，必须在这里主动清理，而不是仅仅"信任 Sanitizer"
+        # 这是因为：
+        # 1. Middleware 的 TARGET_PATHS 可能未包含当前路径
+        # 2. OpenAI 格式的字符串 content 不被 Sanitizer 处理
+        # 3. 无效的 thinking blocks 会导致 Claude API 返回 400 错误
         if any_thinking_found and not all_thinking_valid:
-            # 尝试 fallback 到最近的缓存 signature
-            from .signature_cache import get_last_signature
-            last_sig = get_last_signature()
-            if last_sig:
-                log.info(f"[ANTIGRAVITY] 历史消息中的某些 thinking block 没有有效 signature，但找到最近缓存的 signature，保持 thinking 模式启用")
-                all_thinking_valid = True  # 标记为有效，避免后续禁用
-            else:
-                log.warning(f"[ANTIGRAVITY] Thinking 已启用，但历史消息中的某些 thinking block 没有有效的 signature（缓存也未命中，且无最近缓存），禁用 thinking 模式以避免 400 错误")
-                enable_thinking = False
+            # [FIX 2026-01-21] 主动清理无效的 thinking blocks！
+            # 使用 strip_thinking_from_openai_messages 清理所有 thinking 内容
+            # 这样可以避免 400 错误：messages.*.content.*.thinking.signature: Field required
+            original_msg_count = len(messages) if hasattr(messages, '__len__') else 0
+            messages = strip_thinking_from_openai_messages(messages)
+            log.info(f"[ANTIGRAVITY] 历史消息中的某些 thinking block 签名无效，"
+                    f"已主动清理所有 thinking blocks (messages={original_msg_count})，保持 thinking 模式启用")
+            # 原逻辑已移除：enable_thinking = False
         elif any_thinking_found and all_thinking_valid:
             log.info(f"[ANTIGRAVITY] 历史消息中检测到有效的 thinking block（全部验证通过），保持 thinking 模式启用")
         else:
@@ -1886,17 +2063,17 @@ async def chat_completions(
         original_count = len(messages)
         # 检查是否有 thinking 内容需要清理
         has_thinking_before = any(
-            (hasattr(msg, "role") and getattr(msg, "role", None) == "assistant" and 
-             hasattr(msg, "content") and isinstance(getattr(msg, "content", ""), str) and 
-             ("<think>" in getattr(msg, "content", "").lower() or 
+            (hasattr(msg, "role") and getattr(msg, "role", None) == "assistant" and
+             hasattr(msg, "content") and isinstance(getattr(msg, "content", ""), str) and
+             ("<think>" in getattr(msg, "content", "").lower() or
               "<think>" in getattr(msg, "content", "").lower() or
               "<think>" in getattr(msg, "content", "").lower()))
-            or (isinstance(msg, dict) and msg.get("role") == "assistant" and 
-                isinstance(msg.get("content"), str) and 
-                ("<think>" in msg.get("content", "").lower() or 
+            or (isinstance(msg, dict) and msg.get("role") == "assistant" and
+                isinstance(msg.get("content"), str) and
+                ("<think>" in msg.get("content", "").lower() or
                  "<think>" in msg.get("content", "").lower() or
                  "<think>" in msg.get("content", "").lower()))
-            or (isinstance(msg, dict) and msg.get("role") == "assistant" and 
+            or (isinstance(msg, dict) and msg.get("role") == "assistant" and
                 isinstance(msg.get("content"), list) and
                 any(isinstance(item, dict) and item.get("type") in ("thinking", "redacted_thinking") 
                     for item in msg.get("content", [])))
@@ -1947,91 +2124,260 @@ async def chat_completions(
             tools=tools,
             recommend_sequential_thinking=recommend_sequential
         )
+
+        # [FIX 2026-01-21] 跨模型 thinking 块隔离（OpenAI /chat/completions 路径）
+        #
+        # 目标：
+        # - Claude：任何 thought=True 的 part 必须带有效 thoughtSignature，否则会 400
+        #   - 特别是“前思考后工具”（tool_use continuation）场景：最后一条 assistant/model 的首个 part 必须是 thinking+signature
+        # - Gemini：不强制 thoughtSignature（部分实现会使用 skip sentinel）
+        #
+        # 策略（颗粒度更细）：
+        # 1) 若检测到 Claude + tool_use continuation：
+        #    - 先尝试从权威历史/缓存回填 leading thoughtSignature
+        #    - 失败则“仅对本次请求”禁用 thinking，并重建 contents（不影响后续轮次重新启用 thinking）
+        # 2) 非 tool_use continuation：对 Claude 的无签名 thought 降级为普通 text part 以避免 400
+        target_family = get_model_family(actual_model)
+        def _has_tool_use(ps: list) -> bool:
+            for p in ps:
+                if isinstance(p, dict) and (
+                    "functionCall" in p or "function_call" in p or p.get("type") == "tool_use"
+                ):
+                    return True
+            return False
+
+        def _has_valid_leading_thought(ps: list) -> bool:
+            if not ps:
+                return False
+            p0 = ps[0]
+            if not isinstance(p0, dict) or p0.get("thought") is not True:
+                return False
+            sig0 = str(p0.get("thoughtSignature") or "").strip()
+            return bool(sig0) and sig0 != SKIP_SIGNATURE_VALIDATOR and len(sig0) >= MIN_SIGNATURE_LENGTH
+
+        tool_use_continuation = False
+        disable_thinking_for_this_request = False
+
+        # 1) Claude + tool_use continuation：优先保证“leading thinking+signature”规则
+        if enable_thinking and target_family == "claude" and contents:
+            last_model_idx = -1
+            # 有些路径 role 可能是 "assistant" 而不是 "model"，都需要纳入检查
+            for i in range(len(contents) - 1, -1, -1):
+                if contents[i].get("role") in ("model", "assistant"):
+                    last_model_idx = i
+                    break
+
+            if last_model_idx >= 0:
+                parts = contents[last_model_idx].get("parts", [])
+                if isinstance(parts, list) and _has_tool_use(parts):
+                    tool_use_continuation = True
+                    if _has_valid_leading_thought(parts):
+                        pass
+                    else:
+                        # [FIX 2026-01-21] tool_use continuation 必须以“完整 thinking 块”开头：
+                        # Claude 校验 signature 时要求 signature 对应“该 thinking 块全文”。
+                        # 但流式/中间层可能把 thinking 拆成多个 thought=true 分片（每片没有 signature）。
+                        # 若仅用 parts[0].text 回填 signature，会导致签名与全文不匹配 → 400 Invalid signature。
+                        #
+                        # 策略：把连续的 leading thought 分片合并为一个 thought part，然后按合并后的全文回填 signature。
+                        recovered_leading = False
+
+                        # 收集 leading thought 分片（直到遇到非 thought 的 part）
+                        leading_thought_texts: list[str] = []
+                        leading_thought_count = 0
+                        for p in parts:
+                            if isinstance(p, dict) and p.get("thought") is True:
+                                leading_thought_count += 1
+                                leading_thought_texts.append(str(p.get("text") or ""))
+                                continue
+                            break
+
+                        combined_lead_text_raw = "".join(leading_thought_texts)
+                        combined_lead_text = combined_lead_text_raw.strip()
+                        if combined_lead_text:
+                            # [FIX 2026-01-22] 方案3：优先从SCID权威历史恢复thinking块
+                            # 如果有SCID，直接使用权威历史中的完整thinking块（包括签名）
+                            # 这样可以避免文本匹配问题，因为权威历史中的thinking块是原始的、未变形的
+                            scid = request_body.get("_scid") if request_body else None
+                            if scid:
+                                try:
+                                    from src.ide_compat.state_manager import ConversationStateManager
+                                    from src.cache.signature_database import SignatureDatabase
+
+                                    db = SignatureDatabase()
+                                    state_manager = ConversationStateManager(db)
+                                    state = state_manager.get_or_create_state(scid, client_type or "unknown")
+
+                                    # 从权威历史获取最后一条assistant消息
+                                    authoritative_history = state.authoritative_history
+                                    last_assistant = None
+                                    for msg in reversed(authoritative_history):
+                                        if msg.get("role") == "assistant":
+                                            last_assistant = msg
+                                            break
+
+                                    # 提取thinking块
+                                    if last_assistant:
+                                        content = last_assistant.get("content", [])
+                                        if isinstance(content, list):
+                                            for block in content:
+                                                if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"):
+                                                    thinking_text = block.get("thinking", "")
+                                                    signature = block.get("thoughtSignature") or block.get("signature", "")
+
+                                                    if thinking_text and signature and len(signature) >= MIN_SIGNATURE_LENGTH:
+                                                        # 找到了有效的thinking块，直接使用
+                                                        new_leading = {
+                                                            "thought": True,
+                                                            "text": thinking_text,
+                                                            "thoughtSignature": signature,
+                                                        }
+                                                        # 替换当前parts中的thinking块
+                                                        parts = [new_leading] + [p for p in parts if not (isinstance(p, dict) and p.get("thought") is True)]
+                                                        contents[last_model_idx]["parts"] = parts
+                                                        recovered_leading = True
+                                                        log.info(
+                                                            "[ANTIGRAVITY] Recovered leading thinking from SCID authoritative history; "
+                                                            f"scid={scid[:20]}..., thinking_len={len(thinking_text)}, sig_len={len(signature)}"
+                                                        )
+                                                        break
+                                except Exception as e:
+                                    log.warning(f"[ANTIGRAVITY] Failed to recover from SCID authoritative history: {e}")
+
+                            # 如果SCID恢复失败，继续使用原有的签名恢复策略
+                            # 优先使用"签名+原始 thinking_text"成对回放，避免任何 strip/重排导致的签名失效
+                            recovered_pair = None
+                            if not recovered_leading:
+                                try:
+                                    # 使用客户端特定窗口（默认 5min；IDE 更长），尽量命中同一会话的最近条目
+                                    time_window = 300
+                                    if client_type:
+                                        client_ttl = get_ttl_for_client(client_type)
+                                        time_window = client_ttl // 2
+                                    recovered_pair = get_recent_signature_with_text(time_window_seconds=time_window, client_type=client_type, owner_id=owner_id)
+                                except Exception as e:
+                                    log.debug(f"[ANTIGRAVITY] get_recent_signature_with_text failed: {e}")
+
+                            if recovered_pair:
+                                pair_sig, pair_text = recovered_pair
+                                # 仅当文本严格匹配时才使用，避免跨会话/跨请求误注入导致 invalid signature
+                                if isinstance(pair_text, str) and pair_text.strip() == combined_lead_text:
+                                    cached_sig = str(pair_sig or "").strip()
+                                    if cached_sig and cached_sig != SKIP_SIGNATURE_VALIDATOR and len(cached_sig) >= MIN_SIGNATURE_LENGTH:
+                                        new_leading = {
+                                            "thought": True,
+                                            # 关键：使用缓存中"与签名同源"的原始 thinking_text（不做额外规范化）
+                                            "text": pair_text,
+                                            "thoughtSignature": cached_sig,
+                                        }
+                                        parts = [new_leading] + parts[leading_thought_count:]
+                                        contents[last_model_idx]["parts"] = parts
+                                        recovered_leading = True
+                                        log.info(
+                                            "[ANTIGRAVITY] Recovered leading thoughtSignature (paired replay) for tool_use continuation; "
+                                            "keeping thinking enabled"
+                                        )
+
+                        if not recovered_leading:
+                            # 无法满足 Claude 的工具回合硬规则：仅对本次请求禁用 thinking，避免 400
+                            disable_thinking_for_this_request = True
+
+        if disable_thinking_for_this_request:
+            log.warning(
+                "[ANTIGRAVITY] Claude-family tool_use continuation requires leading thinking+signature, but recovery failed; "
+                "disabling thinking for THIS request only to avoid 400"
+            )
+            enable_thinking = False
+            messages = strip_thinking_from_openai_messages(messages)
+            contents = openai_messages_to_antigravity_contents(
+                messages,
+                enable_thinking=False,
+                tools=tools,
+                recommend_sequential_thinking=recommend_sequential
+            )
+        else:
+            # 2) 非 tool_use continuation：对 Claude 的无签名 thought 做降级（避免 Field required 400）
+            if target_family == "claude" and contents:
+                downgraded = 0
+                recovered = 0
+                for content_item in contents:
+                    parts = content_item.get("parts", [])
+                    if not isinstance(parts, list) or not parts:
+                        continue
+
+                    new_parts = []
+                    for part in parts:
+                        if not isinstance(part, dict):
+                            new_parts.append(part)
+                            continue
+
+                        if part.get("thought") is True:
+                            sig = str(part.get("thoughtSignature") or "").strip()
+                            has_valid_sig = (
+                                bool(sig)
+                                and sig != SKIP_SIGNATURE_VALIDATOR
+                                and len(sig) >= MIN_SIGNATURE_LENGTH
+                            )
+                            if not has_valid_sig:
+                                thinking_text = str(part.get("text") or "").strip()
+                                if thinking_text:
+                                    cached_sig = recover_signature_enhanced(thinking_text, messages, client_type, owner_id)
+                                    if cached_sig and cached_sig != SKIP_SIGNATURE_VALIDATOR and len(cached_sig) >= MIN_SIGNATURE_LENGTH:
+                                        part["thoughtSignature"] = cached_sig
+                                        recovered += 1
+                                        new_parts.append(part)
+                                        continue
+
+                                downgraded += 1
+                                if thinking_text:
+                                    new_parts.append({"text": f"[Thinking: {thinking_text}]"})
+                                continue
+
+                        new_parts.append(part)
+
+                    if new_parts != parts:
+                        content_item["parts"] = new_parts
+
+                if recovered:
+                    log.info(
+                        f"[ANTIGRAVITY] Recovered {recovered} thoughtSignature values from cache for Claude-family model "
+                        f"(model={actual_model})"
+                    )
+                if downgraded:
+                    log.warning(
+                        f"[ANTIGRAVITY] Downgraded {downgraded} unsigned thought parts for Claude-family model "
+                        f"to prevent 400 (model={actual_model})"
+                    )
         
-        # 如果 thinking 启用，确保最后一条 assistant 消息以 thinking block 开头
+        # [FIX 2026-01-21] 不再强制要求“最后一条 assistant/model 消息必须以 thinking block 开头”
+        #
+        # 原逻辑会在常见场景下误触发：
+        # - 历史最后一条 assistant 是纯文本（没有 thought=true）
+        # - 或者 IDE 客户端对历史内容做过截断/过滤
+        #
+        # 这会导致 Router 直接关闭 thinking 并 strip，从而破坏“从缓存恢复 signature”
+        # 的链路，出现“缓存无法从过去恢复”的回归问题。
+        #
+        # 正确策略：thinking 是否启用应由模型能力与业务策略决定；
+        # 只需要确保不会把“无效/缺失 signature 的 thinking block”发给上游（该逻辑已在前面兜底清理）。
         if enable_thinking and contents:
-            # 找到最后一条 assistant 消息（role="model"）
             last_model_index = -1
             for i in range(len(contents) - 1, -1, -1):
                 if contents[i].get("role") == "model":
                     last_model_index = i
                     break
-            
+
             if last_model_index >= 0:
                 last_model = contents[last_model_index]
                 parts = last_model.get("parts", [])
-                
-                # [DEBUG] 证实 Cursor 是否在历史消息中保留 thinking 内容
-                log.info(f"[ANTIGRAVITY DEBUG] Last model message analysis: "
-                        f"parts_count={len(parts)}, "
-                        f"part_types={[('thought' if p.get('thought') else 'text') if isinstance(p, dict) else type(p).__name__ for p in parts[:5]]}")
-                for idx, part in enumerate(parts[:3]):
-                    if isinstance(part, dict):
-                        has_thought = part.get("thought", False)
-                        has_sig = bool(part.get("thoughtSignature"))
-                        text_preview = str(part.get("text", ""))[:80]
-                        log.info(f"[ANTIGRAVITY DEBUG] Part {idx}: thought={has_thought}, has_signature={has_sig}, text_preview='{text_preview}...'")
-                
                 if parts:
                     first_part = parts[0]
-                    # [FIX 2026-01-17] [AUGMENT兼容] 在条件分支外初始化 thinking_part
-                    # 问题：当 first_part 已经是 thinking block 时，thinking_part 变量未定义
-                    # 导致第 2030 行 `if thinking_part:` 报 UnboundLocalError
-                    # 解决：在条件分支外初始化为 None
-                    thinking_part = None
-                    # 检查第一个 part 是否是 thinking block
-                    if not isinstance(first_part, dict) or first_part.get("thought") is not True:
-                        # [FIX 2026-01-17] [CURSOR兼容] 移除从之前消息复制 thinking block 的逻辑
-                        #
-                        # 问题：之前的逻辑尝试从历史消息中复制 thinking block，但这是错误的！
-                        # Claude API 的签名是密码学绑定到特定 thinking 内容的，
-                        # 从之前的消息复制 thinking block，其签名与当前消息的上下文不匹配，
-                        # 导致 400 错误：Invalid signature in thinking block
-                        #
-                        # 正确做法：只使用 get_last_signature_with_text() 返回的配对 (signature, thinking_text)
-                        # 这两者是一起缓存的，保证匹配。
-                        #
-                        # [FIX 2026-01-12] 重新启用 fallback 机制，正确使用缓存
-                            #
-                            # 核心理解：Cursor **从不**在历史消息中发送 thinking block！
-                            # Cursor 会过滤掉 thinking 内容，只发送纯文本响应。
-                            # 因此，我们必须从缓存中获取 signature 和 thinking text。
-                            #
-                            # 之前的 [FIX 2026-01-09] 禁用了 fallback，因为担心 signature 与内容不匹配。
-                            # 但现在 get_last_signature_with_text() 返回的是**配对的** (signature, thinking_text)，
-                            # 这两者是一起缓存的，所以不会出现不匹配的问题。
-                            #
-                            # 关键点：使用缓存返回的 thinking_text，而不是历史消息中的内容！
-                            cached_result = get_last_signature_with_text()
-                            if cached_result:
-                                cached_signature, cached_thinking_text = cached_result
-                                thinking_part = {
-                                    "text": cached_thinking_text,
-                                    "thought": True,
-                                    "thoughtSignature": cached_signature
-                                }
-                                parts.insert(0, thinking_part)
-                                log.info(f"[ANTIGRAVITY] 从缓存恢复 thinking block (fallback): "
-                                        f"thinking_len={len(cached_thinking_text)}, "
-                                        f"signature_len={len(cached_signature)}")
-                            else:
-                                # 缓存为空，确实无法恢复 thinking 模式
-                                log.warning(f"[ANTIGRAVITY] Last assistant message does not start with thinking block, "
-                                           f"cache is empty, cannot recover. "
-                                           f"DISABLING thinking mode to avoid 400 error.")
-                                enable_thinking = False
-                                # 重新清理消息中的 thinking 内容
-                                messages = strip_thinking_from_openai_messages(messages)
-                                # 重新转换消息格式（不带 thinking）
-                                contents = openai_messages_to_antigravity_contents(
-                                    messages,
-                                    enable_thinking=False,
-                                    tools=tools,
-                                    recommend_sequential_thinking=recommend_sequential
-                                )
-                    # 更新 parts（如果有修改）
-                    if thinking_part:
-                        last_model["parts"] = parts
+                    starts_with_thought = isinstance(first_part, dict) and first_part.get("thought") is True
+                    if not starts_with_thought:
+                        log.debug(
+                            "[ANTIGRAVITY] Last model message does not start with thinking block; "
+                            "keeping thinking mode enabled (no forced disable)."
+                        )
     except Exception as e:
         log.error(f"Failed to convert messages: {e}")
         raise HTTPException(status_code=500, detail=f"Message conversion failed: {str(e)}")
@@ -2236,7 +2582,9 @@ async def chat_completions(
                     # 包装请求函数以适配抗截断处理器
                     async def antigravity_request_func(payload):
                         resources, cred_name, cred_data = await send_antigravity_request_stream(
-                            payload, cred_mgr, enable_cross_pool_fallback=enable_cross_pool_fallback
+                            payload, cred_mgr, enable_cross_pool_fallback=enable_cross_pool_fallback,
+                            max_retry_attempts=client_info.get("max_retry_attempts", 0),
+                            is_ide_client=client_info.get("is_ide_client", False)
                         )
                         response, stream_ctx, client = resources
                         return StreamingResponse(
@@ -2244,7 +2592,9 @@ async def chat_completions(
                                 response, stream_ctx, client, model, request_id, cred_mgr, cred_name,
                                 request_body=request_body,  # 传递请求体用于 fallback
                                 cred_mgr=cred_mgr,  # 传递凭证管理器用于 fallback
-                                context_info=context_info  # ✅ 新增：传递上下文信息用于错误消息
+                                context_info=context_info,  # ✅ 新增：传递上下文信息用于错误消息
+                                client_type=client_type,  # [FIX 2026-01-20] 传递客户端类型用于签名编码决策
+                                owner_id=owner_id  # [FIX 2026-01-22] 传递 owner_id 用于会话隔离
                             ),
                             media_type="text/event-stream"
                         )
@@ -2255,7 +2605,9 @@ async def chat_completions(
 
                 # 流式请求（无抗截断）
                 resources, cred_name, cred_data = await send_antigravity_request_stream(
-                    request_body, cred_mgr, enable_cross_pool_fallback=enable_cross_pool_fallback
+                    request_body, cred_mgr, enable_cross_pool_fallback=enable_cross_pool_fallback,
+                    max_retry_attempts=client_info.get("max_retry_attempts", 0),
+                    is_ide_client=client_info.get("is_ide_client", False)
                 )
                 # resources 是一个元组: (response, stream_ctx, client)
                 response, stream_ctx, client = resources
@@ -2268,7 +2620,9 @@ async def chat_completions(
                         response, stream_ctx, client, model, request_id, cred_mgr, cred_name,
                         request_body=request_body,  # 传递请求体用于 fallback
                         cred_mgr=cred_mgr,  # 传递凭证管理器用于 fallback
-                        context_info=context_info  # ✅ 新增：传递上下文信息用于错误消息
+                        context_info=context_info,  # ✅ 新增：传递上下文信息用于错误消息
+                        client_type=client_type,  # [FIX 2026-01-20] 传递客户端类型用于签名编码决策
+                        owner_id=owner_id  # [FIX 2026-01-22] 传递 owner_id 用于会话隔离
                     ),
                     media_type="text/event-stream"
                 )
@@ -2527,6 +2881,11 @@ async def gemini_stream_generate_content(
     """处理 Gemini 格式的流式内容生成请求（通过 Antigravity API）"""
     log.debug(f"[ANTIGRAVITY GEMINI] Streaming request for model: {model}")
 
+    # ✅ [FIX 2026-01-22] 检测客户端类型，用于 IDE 增强重试
+    forwarded_user_agent = request.headers.get("x-forwarded-user-agent", "")
+    user_agent = forwarded_user_agent or request.headers.get("user-agent", "")
+    client_info = get_client_info(user_agent)
+
     # 获取原始请求数据
     try:
         request_data = await request.json()
@@ -2626,7 +2985,9 @@ async def gemini_stream_generate_content(
             # 包装请求函数以适配抗截断处理器
             async def antigravity_gemini_request_func(payload):
                 resources, cred_name, cred_data = await send_antigravity_request_stream(
-                    payload, cred_mgr
+                    payload, cred_mgr,
+                    max_retry_attempts=client_info.get("max_retry_attempts", 0),
+                    is_ide_client=client_info.get("is_ide_client", False)
                 )
                 response, stream_ctx, client = resources
                 return StreamingResponse(
@@ -2642,7 +3003,9 @@ async def gemini_stream_generate_content(
 
         # 流式请求（无抗截断）
         resources, cred_name, cred_data = await send_antigravity_request_stream(
-            request_body, cred_mgr
+            request_body, cred_mgr,
+            max_retry_attempts=client_info.get("max_retry_attempts", 0),
+            is_ide_client=client_info.get("is_ide_client", False)
         )
         # resources 是一个元组: (response, stream_ctx, client)
         response, stream_ctx, client = resources

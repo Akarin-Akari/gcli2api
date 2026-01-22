@@ -261,11 +261,11 @@ async def get_code_assist_endpoint() -> str:
 
     Environment variable: CODE_ASSIST_ENDPOINT
     Database config key: code_assist_endpoint
-    Default: https://cloudcode-pa.googleapis.com
+    Default: https://daily-cloudcode-pa.sandbox.googleapis.com (沙箱环境，容量更宽松)
     """
     return str(
         await get_config_value(
-            "code_assist_endpoint", "https://cloudcode-pa.googleapis.com", "CODE_ASSIST_ENDPOINT"
+            "code_assist_endpoint", "https://daily-cloudcode-pa.sandbox.googleapis.com", "CODE_ASSIST_ENDPOINT"
         )
     )
 
@@ -400,32 +400,70 @@ async def get_antigravity_fallback_urls() -> List[str]:
     Get Antigravity API fallback URLs for BaseURL failover.
 
     对齐 CLIProxyAPI 的多层级故障转移策略：
-    1. 沙箱环境（Sandbox）- 最高优先级
-    2. Daily 环境（Daily）
-    3. 生产环境（Production）
+    1. 沙箱环境（Sandbox）- 最高优先级，容量最大
+    2. Daily 环境（Daily）- 备用
+
+    ⚠️ [FIX 2026-01-22] 移除生产端点 cloudcode-pa.googleapis.com
+    该端点容量极小，频繁触发 MODEL_CAPACITY_EXHAUSTED 429 错误，
+    导致 Cursor/Augment Code 等 IDE 的会话直接中断。
 
     Returns:
-        按优先级排序的 BaseURL 列表
+        按优先级排序的 BaseURL 列表（不含生产端点）
     """
     # 获取主 URL（用户配置的优先级最高）
     primary_url = await get_antigravity_api_url()
 
-    # 定义所有可用的 BaseURL（按优先级排序）
+    # ✅ [FIX 2026-01-22] 只保留沙箱和 Daily 端点，移除生产端点
+    # 生产端点 cloudcode-pa.googleapis.com 容量太小，基本无法使用
+    # ✅ [FIX 2026-01-23] 确保至少有 2 个备用 URL（不包括主 URL），总共至少 3 个 URL
     all_urls = [
-        "https://daily-cloudcode-pa.sandbox.googleapis.com",  # 沙箱
-        "https://daily-cloudcode-pa.googleapis.com",          # Daily
-        "https://cloudcode-pa.googleapis.com",                # 生产
+        "https://daily-cloudcode-pa.sandbox.googleapis.com",  # 沙箱（容量最大）
+        "https://daily-cloudcode-pa.googleapis.com",          # Daily（备用）
+        # ❌ 已移除: "https://cloudcode-pa.googleapis.com"    # 生产（容量极小，已禁用）
     ]
 
     # 如果主 URL 不在列表中，将其作为最高优先级
+    # 但要排除生产端点（即使用户手动配置了也不允许）
+    production_endpoint = "https://cloudcode-pa.googleapis.com"
+    if primary_url == production_endpoint:
+        # 用户配置了生产端点，强制替换为沙箱
+        primary_url = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+
     if primary_url not in all_urls:
+        # 主 URL 不在列表中，添加到列表开头
         all_urls.insert(0, primary_url)
     else:
-        # 将主 URL 移到列表开头
+        # 主 URL 已在列表中，移到列表开头
         all_urls.remove(primary_url)
         all_urls.insert(0, primary_url)
+    
+    # ✅ [FIX 2026-01-23] 确保至少有 3 个 URL（主 URL + 2 个备用）
+    # 如果主 URL 已经在列表中，最终只有 2 个 URL，需要添加更多备用 URL
+    # 由于生产端点已移除，我们确保至少有 2 个不同的 URL（沙箱和 Daily）
+    # 如果主 URL 是其中一个，则确保另一个也在列表中
+    sandbox_url = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+    daily_url = "https://daily-cloudcode-pa.googleapis.com"
+    
+    # 确保沙箱和 Daily 都在列表中（如果它们不是主 URL）
+    if sandbox_url not in all_urls:
+        all_urls.append(sandbox_url)
+    if daily_url not in all_urls:
+        all_urls.append(daily_url)
+    
+    # 去重并保持主 URL 在第一位
+    seen = set()
+    unique_urls = []
+    for url in all_urls:
+        if url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
+    
+    # 确保主 URL 在第一位
+    if unique_urls[0] != primary_url:
+        unique_urls.remove(primary_url)
+        unique_urls.insert(0, primary_url)
 
-    return all_urls
+    return unique_urls
 
 
 # ==================== 后台刷新配置 ====================

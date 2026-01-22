@@ -1,0 +1,165 @@
+# Gateway 后端配置
+#
+# 配置说明：
+# - enabled: 是否启用该后端（支持环境变量替换）
+# - priority: 优先级（数字越小优先级越高）
+# - base_url: 后端服务地址
+# - models: 支持的模型列表（"*" 表示支持所有模型）
+# - timeout: 普通请求超时时间（秒）
+# - stream_timeout: 流式请求超时时间（秒）
+# - max_retries: 最大重试次数
+#
+# 环境变量替换语法：${VAR_NAME:default_value}
+# 例如：${COPILOT_ENABLED:true} 表示从环境变量 COPILOT_ENABLED 读取，默认值为 true
+
+backends:
+  # Antigravity 后端 - 支持 Claude、Gemini 等模型
+  antigravity:
+    enabled: true
+    priority: 1
+    base_url: "http://127.0.0.1:7861/antigravity/v1"
+    models: ["*"]  # 支持所有模型
+    timeout: 60
+    stream_timeout: 300
+    max_retries: 2
+
+  # Copilot 后端 - 支持 GPT、O1、O3 等 OpenAI 模型
+  copilot:
+    enabled: ${COPILOT_ENABLED:true}
+    priority: 2
+    base_url: "http://127.0.0.1:8141/v1"
+    models:
+      - gpt-4
+      - gpt-4-turbo
+      - gpt-4o
+      - gpt-4o-mini
+      - gpt-5
+      - gpt-5.1
+      - gpt-5.2
+      - o1
+      - o1-mini
+      - o1-preview
+      - o3
+      - o3-mini
+    timeout: 120
+    stream_timeout: 600
+    max_retries: 3
+
+  # Kiro Gateway 后端 - 第三方网关（可选）
+  kiro-gateway:
+    enabled: ${KIRO_GATEWAY_ENABLED:true}
+    priority: 3
+    base_url: ${KIRO_GATEWAY_ENDPOINT:http://127.0.0.1:9876/v1}
+    models:
+      - claude-sonnet-4.5
+      - claude-opus-4.5
+      - claude-haiku-4.5
+      - claude-sonnet-4
+    timeout: 180
+    stream_timeout: 900
+    max_retries: 2
+
+# ==================== 模型特定路由规则 ====================
+#
+# 配置说明：
+# - 为特定模型配置优先级后端链
+# - backends: 按优先级排序的后端列表（第一个优先）
+#   - 格式可以是:
+#     - 字符串: "backend_name" (使用请求中的原始模型)
+#     - 对象: {backend: "backend_name", model: "target_model"} (指定目标模型)
+# - fallback_on: 触发降级到下一个后端的条件
+#   - HTTP 状态码（如 429, 503）
+#   - 特殊条件：timeout, connection_error, unavailable
+# - enabled: 是否启用此路由规则（默认 true）
+#
+# 完整降级链示例 (claude-sonnet-4.5):
+# kiro -> antigravity(4.5) -> anyrouter(4.5) -> copilot(4.5) -> copilot(4) -> antigravity(gemini-3-pro)
+#
+model_routing:
+  # Claude Sonnet 4.5 完整降级链
+  # 优先使用 Kiro（限时优惠额度），逐级降级直到 Gemini 3 Pro
+  claude-sonnet-4.5:
+    enabled: ${SONNET45_KIRO_FIRST:true}
+    backends:
+      # 1. Kiro Gateway - 限时优惠额度
+      - backend: kiro-gateway
+        model: claude-sonnet-4.5
+      # 2. Antigravity - Claude 4.5 (thinking 模型)
+      - backend: antigravity
+        model: claude-sonnet-4.5
+      # 3. AnyRouter - Claude 4.5 (公益站)
+      - backend: anyrouter
+        model: claude-sonnet-4.5
+      # 4. Copilot - Claude 4.5
+      - backend: copilot
+        model: claude-sonnet-4.5
+      # 5. Copilot - Claude Sonnet 4 (降级到 4.0)
+      - backend: copilot
+        model: claude-sonnet-4
+      # 6. Antigravity - Gemini 3 Pro (跨池降级)
+      - backend: antigravity
+        model: gemini-3-pro
+    fallback_on:
+      - 429             # 配额耗尽 / 速率限制
+      - 503             # 服务不可用
+      - 502             # 网关错误
+      - 500             # 服务器内部错误
+      - timeout         # 请求超时
+      - connection_error # 连接失败
+      - unavailable     # 后端不可用
+
+  # Claude Opus 4.5 完整降级链
+  # ✅ [FIX 2026-01-22] Opus 4.5 优先使用 Antigravity，Kiro Gateway 作为降级
+  claude-opus-4.5:
+    enabled: ${OPUS45_ANTIGRAVITY_FIRST:true}
+    backends:
+      # 1. Antigravity - Claude Opus 4.5 (优先使用)
+      - backend: antigravity
+        model: claude-opus-4.5
+      # 2. Kiro Gateway - 限时优惠额度 (降级)
+      - backend: kiro-gateway
+        model: claude-opus-4.5
+      # 3. AnyRouter - Claude Opus 4.5
+      - backend: anyrouter
+        model: claude-opus-4.5
+      # 4. Copilot - Claude Opus 4.5
+      - backend: copilot
+        model: claude-opus-4.5
+      # 5. Copilot - Claude Sonnet 4.5 (降级到 Sonnet)
+      - backend: copilot
+        model: claude-sonnet-4.5
+      # 6. Copilot - Claude Sonnet 4
+      - backend: copilot
+        model: claude-sonnet-4
+      # 7. Antigravity - Gemini 3 Pro (跨池降级)
+      - backend: antigravity
+        model: gemini-3-pro
+    fallback_on:
+      - 429
+      - 503
+      - 502
+      - 500
+      - timeout
+      - connection_error
+      - unavailable
+
+  # Claude Haiku 4.5 降级链 (轻量模型)
+  claude-haiku-4.5:
+    enabled: ${HAIKU45_KIRO_FIRST:false}
+    backends:
+      - backend: kiro-gateway
+        model: claude-haiku-4.5
+      - backend: antigravity
+        model: claude-haiku-4.5
+      - backend: copilot
+        model: claude-haiku-4.5
+      # Haiku 降级到 Gemini Flash (同为轻量模型)
+      - backend: antigravity
+        model: gemini-3-flash
+    fallback_on:
+      - 429
+      - 503
+      - 502
+      - timeout
+      - connection_error
+      - unavailable

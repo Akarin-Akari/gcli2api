@@ -1140,6 +1140,9 @@
             justify-content: flex-end;
         }
     </style>
+
+    <!-- Chart.js 库 - 用于 Token 统计图表 -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 
 <body>
@@ -1156,8 +1159,17 @@
 
         <!-- 主界面 -->
         <div id="mainSection" class="hidden">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h1 style="margin: 0;">GCLI2API 管理面板</h1>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+                <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                    <h1 style="margin: 0;">GCLI2API 管理面板</h1>
+                    <span id="versionInfo" style="font-size: 12px; color: #666;">
+                        <span id="versionText">加载中...</span>
+                    </span>
+                    <button onclick="checkForUpdates()" id="checkUpdateBtn"
+                        style="padding: 4px 12px; background-color: #17a2b8; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap;">
+                        检查更新
+                    </button>
+                </div>
                 <button onclick="logout()"
                     style="padding: 8px 20px; background-color: #dc3545; color: white; border: none; border-radius: 5px; font-size: 14px; cursor: pointer;">
                     退出登录
@@ -1173,6 +1185,7 @@
                 <button class="tab" onclick="switchTab('manage')">GCLI凭证管理</button>
                 <button class="tab" onclick="switchTab('antigravity-manage')">Antigravity凭证管理</button>
                 <button class="tab" onclick="switchTab('config')">配置管理</button>
+                <button class="tab" onclick="switchTab('stats')">Token统计</button>
                 <button class="tab" onclick="switchTab('logs')">实时日志</button>
                 <button class="tab" onclick="switchTab('about')">项目信息</button>
             </div>
@@ -1517,6 +1530,8 @@
                         <button class="batch-btn" style="background-color: #ff9800;" id="batchVerifyBtn"
                             onclick="batchVerifyProjectIds()" disabled>批量检验</button>
                         <button class="batch-btn batch-email" onclick="refreshAllEmails()">刷新所有邮箱</button>
+                        <button class="batch-btn" style="background-color: #e91e63;"
+                            onclick="deduplicateByEmail()">凭证一键去重</button>
                     </div>
                 </div>
 
@@ -1624,6 +1639,8 @@
                         <button class="batch-btn" style="background-color: #ff9800;" id="antigravityBatchVerifyBtn"
                             onclick="batchVerifyAntigravityProjectIds()" disabled>批量检验</button>
                         <button class="batch-btn batch-email" onclick="refreshAllAntigravityEmails()">刷新所有邮箱</button>
+                        <button class="batch-btn" style="background-color: #e91e63;"
+                            onclick="deduplicateAntigravityByEmail()">凭证一键去重</button>
                     </div>
                 </div>
 
@@ -1878,6 +1895,21 @@
                                     Pro）支持thinking模式，会在生成回答前先输出思考过程。启用后可以看到模型的思考过程；禁用后只显示最终回答，让输出更简洁。
                                 </div>
                             </div>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="antigravityStream2nostream" class="config-checkbox" />
+                                    Antigravity流式转非流式
+                                </label>
+                                <small class="config-note">启用后，非流式请求将使用流式API并收集为完整响应 <span
+                                        style="color: #28a745;">✓ 支持热更新</span></small>
+                                <div class="config-info"
+                                    style="background-color: #f3e5f5; border: 1px solid #9c27b0; color: #4a148c;">
+                                    <strong>🔄 说明：</strong>针对Antigravity模式的优化选项。启用后，即使客户端请求非流式响应，后端也会使用流式API获取数据并收集完整后再返回。
+                                    <br><strong>适用场景：</strong>某些情况下流式API比非流式API更稳定，启用此选项可以提高响应质量。
+                                    <br><strong>默认：</strong>已启用
+                                </div>
+                            </div>
                         </div>
 
                         <div class="config-group">
@@ -1968,6 +2000,113 @@
                 <div id="logContainer"
                     style="background-color: #1e1e1e; color: #ffffff; font-family: 'Courier New', monospace; font-size: 12px; height: 600px; overflow-y: auto; border: 1px solid #333; border-radius: 5px; padding: 15px; white-space: pre-wrap; word-break: break-all;">
                     <div id="logContent">等待连接日志流...</div>
+                </div>
+            </div>
+
+            <!-- Token 统计标签页 -->
+            <div id="statsTab" class="tab-content">
+                <h3>Token 统计</h3>
+
+                <!-- 时间范围选择 -->
+                <div class="stats-controls" style="margin-bottom: 20px;">
+                    <label for="statsTimeRange">统计时间范围：</label>
+                    <select id="statsTimeRange" onchange="loadTokenStats()">
+                        <option value="1">最近 1 小时</option>
+                        <option value="6">最近 6 小时</option>
+                        <option value="24" selected>最近 24 小时</option>
+                        <option value="72">最近 3 天</option>
+                        <option value="168">最近 7 天</option>
+                    </select>
+                    <button class="btn" style="width: auto; margin-left: 10px;" onclick="loadTokenStats()">
+                        刷新统计
+                    </button>
+                    <button class="btn" style="width: auto; margin-left: 10px; background-color: #dc3545;" onclick="clearTokenStats()">
+                        清除数据
+                    </button>
+                </div>
+
+                <!-- 统计卡片 -->
+                <div class="stats-cards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px;">
+                    <div class="stats-card" style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 20px; border-radius: 10px;">
+                        <div style="font-size: 14px; opacity: 0.9;">总 Token 数</div>
+                        <div id="statsTotalTokens" style="font-size: 28px; font-weight: bold;">-</div>
+                    </div>
+                    <div class="stats-card" style="background: linear-gradient(135deg, #11998e, #38ef7d); color: white; padding: 20px; border-radius: 10px;">
+                        <div style="font-size: 14px; opacity: 0.9;">总请求数</div>
+                        <div id="statsTotalRequests" style="font-size: 28px; font-weight: bold;">-</div>
+                    </div>
+                    <div class="stats-card" style="background: linear-gradient(135deg, #fc4a1a, #f7b733); color: white; padding: 20px; border-radius: 10px;">
+                        <div style="font-size: 14px; opacity: 0.9;">活跃账号</div>
+                        <div id="statsUniqueAccounts" style="font-size: 28px; font-weight: bold;">-</div>
+                    </div>
+                    <div class="stats-card" style="background: linear-gradient(135deg, #4776E6, #8E54E9); color: white; padding: 20px; border-radius: 10px;">
+                        <div style="font-size: 14px; opacity: 0.9;">使用模型</div>
+                        <div id="statsUniqueModels" style="font-size: 28px; font-weight: bold;">-</div>
+                    </div>
+                </div>
+
+                <!-- 详细统计表格 -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <!-- 按模型统计 -->
+                    <div class="stats-table-section">
+                        <h4 style="margin-bottom: 15px;">📊 按模型统计</h4>
+                        <div id="modelStatsTable" style="max-height: 400px; overflow-y: auto;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: #f8f9fa; position: sticky; top: 0;">
+                                        <th style="padding: 10px; text-align: left; border-bottom: 2px solid #dee2e6;">模型</th>
+                                        <th style="padding: 10px; text-align: right; border-bottom: 2px solid #dee2e6;">Token 数</th>
+                                        <th style="padding: 10px; text-align: right; border-bottom: 2px solid #dee2e6;">请求数</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="modelStatsBody">
+                                    <tr><td colspan="3" style="text-align: center; padding: 20px; color: #666;">暂无数据</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 按账号统计 -->
+                    <div class="stats-table-section">
+                        <h4 style="margin-bottom: 15px;">👤 按账号统计</h4>
+                        <div id="accountStatsTable" style="max-height: 400px; overflow-y: auto;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: #f8f9fa; position: sticky; top: 0;">
+                                        <th style="padding: 10px; text-align: left; border-bottom: 2px solid #dee2e6;">账号</th>
+                                        <th style="padding: 10px; text-align: right; border-bottom: 2px solid #dee2e6;">Token 数</th>
+                                        <th style="padding: 10px; text-align: right; border-bottom: 2px solid #dee2e6;">请求数</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="accountStatsBody">
+                                    <tr><td colspan="3" style="text-align: center; padding: 20px; color: #666;">暂无数据</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 趋势图表区域 -->
+                <div style="margin-top: 40px;">
+                    <h4 style="margin-bottom: 20px;">📈 使用趋势分析</h4>
+
+                    <!-- 图表选项卡 -->
+                    <div style="margin-bottom: 20px; border-bottom: 2px solid #e1e4e8;">
+                        <button id="chartTabModel" class="chart-tab active" onclick="switchChartTab('model')" style="padding: 10px 20px; border: none; background: none; cursor: pointer; border-bottom: 3px solid #4285f4; font-weight: bold; color: #4285f4;">
+                            模型趋势
+                        </button>
+                        <button id="chartTabAccount" class="chart-tab" onclick="switchChartTab('account')" style="padding: 10px 20px; border: none; background: none; cursor: pointer; border-bottom: 3px solid transparent; color: #666;">
+                            账号趋势
+                        </button>
+                        <button id="chartTabPie" class="chart-tab" onclick="switchChartTab('pie')" style="padding: 10px 20px; border: none; background: none; cursor: pointer; border-bottom: 3px solid transparent; color: #666;">
+                            占比分析
+                        </button>
+                    </div>
+
+                    <!-- 图表容器 -->
+                    <div style="position: relative; height: 400px; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <canvas id="trendChart"></canvas>
+                    </div>
                 </div>
             </div>
 

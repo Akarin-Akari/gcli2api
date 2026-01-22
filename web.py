@@ -60,6 +60,15 @@ async def lifespan(app: FastAPI):
         log.error(f"凭证管理器初始化失败: {e}")
         global_credential_manager = None
 
+    # ========== [NEW 2026-01-22] 初始化 Token 统计数据库 ==========
+    try:
+        from src import token_stats
+        await token_stats.init_db()
+        log.info("[TOKEN_STATS] Token 统计数据库初始化成功")
+    except Exception as e:
+        log.error(f"[TOKEN_STATS] Token 统计数据库初始化失败: {e}")
+    # ========== Token 统计数据库初始化结束 ==========
+
     # ================================================================
     # [PHASE 2 DUAL_WRITE] 启用缓存双写模式 - 生产测试
     # 作者: Claude Opus 4 (浮浮酱)

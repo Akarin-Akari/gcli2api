@@ -929,6 +929,7 @@ function triggerTabDataLoad(tabName) {
     if (tabName === 'antigravity-manage') AppState.antigravityCreds.refresh();
     if (tabName === 'config') loadConfig();
     if (tabName === 'logs') connectWebSocket();
+    if (tabName === 'stats') loadTokenStats();  // Token 统计标签页自动加载数据
 }
 
 
@@ -1855,6 +1856,71 @@ async function refreshAllAntigravityEmails() {
 }
 
 // =====================================================================
+// 凭证去重功能
+// =====================================================================
+async function deduplicateByEmail() {
+    if (!confirm('确定要对凭证进行凭证一键去重吗？\n\n相同邮箱的凭证只保留一个，其他将被删除。\n此操作不可撤销！')) return;
+
+    try {
+        showStatus('正在进行凭证一键去重...', 'info');
+        const response = await fetch('./creds/deduplicate-by-email', {
+            method: 'POST',
+            headers: getAuthHeaders()
+        });
+        const data = await response.json();
+        if (response.ok) {
+            const msg = `去重完成：删除 ${data.deleted_count} 个重复凭证，保留 ${data.kept_count} 个凭证（${data.unique_emails_count} 个唯一邮箱）`;
+            showStatus(msg, 'success');
+            await AppState.creds.refresh();
+
+            // 显示详细信息
+            if (data.duplicate_groups && data.duplicate_groups.length > 0) {
+                let details = '去重详情：\n\n';
+                data.duplicate_groups.forEach(group => {
+                    details += `邮箱: ${group.email}\n保留: ${group.kept_file}\n删除: ${group.deleted_files.join(', ')}\n\n`;
+                });
+                console.log(details);
+            }
+        } else {
+            showStatus(data.message || '去重失败', 'error');
+        }
+    } catch (error) {
+        showStatus(`去重网络错误: ${error.message}`, 'error');
+    }
+}
+
+async function deduplicateAntigravityByEmail() {
+    if (!confirm('确定要对Antigravity凭证进行凭证一键去重吗？\n\n相同邮箱的凭证只保留一个，其他将被删除。\n此操作不可撤销！')) return;
+
+    try {
+        showStatus('正在进行凭证一键去重...', 'info');
+        const response = await fetch('./antigravity/creds/deduplicate-by-email', {
+            method: 'POST',
+            headers: getAuthHeaders()
+        });
+        const data = await response.json();
+        if (response.ok) {
+            const msg = `去重完成：删除 ${data.deleted_count} 个重复凭证，保留 ${data.kept_count} 个凭证（${data.unique_emails_count} 个唯一邮箱）`;
+            showStatus(msg, 'success');
+            await AppState.antigravityCreds.refresh();
+
+            // 显示详细信息
+            if (data.duplicate_groups && data.duplicate_groups.length > 0) {
+                let details = '去重详情：\n\n';
+                data.duplicate_groups.forEach(group => {
+                    details += `邮箱: ${group.email}\n保留: ${group.kept_file}\n删除: ${group.deleted_files.join(', ')}\n\n`;
+                });
+                console.log(details);
+            }
+        } else {
+            showStatus(data.message || '去重失败', 'error');
+        }
+    } catch (error) {
+        showStatus(`去重网络错误: ${error.message}`, 'error');
+    }
+}
+
+// =====================================================================
 // WebSocket日志相关
 // =====================================================================
 function connectWebSocket() {
@@ -2249,7 +2315,7 @@ const mirrorUrls = {
 };
 
 const officialUrls = {
-    codeAssistEndpoint: 'https://cloudcode-pa.googleapis.com',
+    codeAssistEndpoint: 'https://daily-cloudcode-pa.sandbox.googleapis.com',  // ✅ [FIX 2026-01-22] 使用沙箱端点，生产端点容量有限
     oauthProxyUrl: 'https://oauth2.googleapis.com',
     googleapisProxyUrl: 'https://www.googleapis.com',
     resourceManagerApiUrl: 'https://cloudresourcemanager.googleapis.com',
@@ -2475,6 +2541,98 @@ function updateCooldownDisplays() {
 }
 
 // =====================================================================
+// 版本信息管理
+// =====================================================================
+
+// 获取并显示版本信息（不检查更新）
+async function fetchAndDisplayVersion() {
+    try {
+        const response = await fetch('./version/info');
+        const data = await response.json();
+
+        const versionText = document.getElementById('versionText');
+
+        if (data.success) {
+            // 只显示版本号
+            versionText.textContent = `v${data.version}`;
+            versionText.title = `完整版本: ${data.full_hash}\n提交信息: ${data.message}\n提交时间: ${data.date}`;
+            versionText.style.cursor = 'help';
+        } else {
+            versionText.textContent = '未知版本';
+            versionText.title = data.error || '无法获取版本信息';
+        }
+    } catch (error) {
+        console.error('获取版本信息失败:', error);
+        const versionText = document.getElementById('versionText');
+        if (versionText) {
+            versionText.textContent = '版本信息获取失败';
+        }
+    }
+}
+
+// 检查更新
+async function checkForUpdates() {
+    const checkBtn = document.getElementById('checkUpdateBtn');
+    if (!checkBtn) return;
+
+    const originalText = checkBtn.textContent;
+
+    try {
+        // 显示检查中状态
+        checkBtn.textContent = '检查中...';
+        checkBtn.disabled = true;
+
+        // 调用API检查更新
+        const response = await fetch('./version/info?check_update=true');
+        const data = await response.json();
+
+        if (data.success) {
+            if (data.check_update === false) {
+                // 检查更新失败
+                showStatus(`检查更新失败: ${data.update_error || '未知错误'}`, 'error');
+            } else if (data.has_update === true) {
+                // 有更新
+                const updateMsg = `发现新版本！\n当前: v${data.version}\n最新: v${data.latest_version}\n\n更新内容: ${data.latest_message || '无'}`;
+                showStatus(updateMsg.replace(/\n/g, ' '), 'warning');
+
+                // 更新按钮样式
+                checkBtn.style.backgroundColor = '#ffc107';
+                checkBtn.textContent = '有新版本';
+
+                setTimeout(() => {
+                    checkBtn.style.backgroundColor = '#17a2b8';
+                    checkBtn.textContent = originalText;
+                }, 5000);
+            } else if (data.has_update === false) {
+                // 已是最新
+                showStatus('已是最新版本！', 'success');
+
+                checkBtn.style.backgroundColor = '#28a745';
+                checkBtn.textContent = '已是最新';
+
+                setTimeout(() => {
+                    checkBtn.style.backgroundColor = '#17a2b8';
+                    checkBtn.textContent = originalText;
+                }, 3000);
+            } else {
+                // 无法确定
+                showStatus('无法确定是否有更新', 'info');
+            }
+        } else {
+            showStatus(`检查更新失败: ${data.error}`, 'error');
+        }
+    } catch (error) {
+        console.error('检查更新失败:', error);
+        showStatus(`检查更新失败: ${error.message}`, 'error');
+    } finally {
+        checkBtn.disabled = false;
+        if (checkBtn.textContent === '检查中...') {
+            checkBtn.textContent = originalText;
+        }
+    }
+}
+
+// =====================================================================
 // 页面初始化
 // =====================================================================
 window.onload = async function () {
@@ -2482,6 +2640,9 @@ window.onload = async function () {
 
     if (!autoLoginSuccess) {
         showStatus('请输入密码登录', 'info');
+    } else {
+        // 登录成功后获取版本信息
+        await fetchAndDisplayVersion();
     }
 
     startCooldownTimer();
@@ -2514,3 +2675,389 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 });
+
+// =====================================================================
+// Token 统计功能
+// =====================================================================
+
+function formatNumber(num) {
+    if (num >= 1000000) {
+        return (num / 1000000).toFixed(1) + 'M';
+    } else if (num >= 1000) {
+        return (num / 1000).toFixed(1) + 'K';
+    }
+    return num.toString();
+}
+
+async function loadTokenStats() {
+    const hours = document.getElementById('statsTimeRange').value;
+
+    try {
+        // 并行请求所有统计数据
+        const [summaryResp, modelResp, accountResp] = await Promise.all([
+            fetch(`./stats/summary?hours=${hours}`, { headers: getAuthHeaders() }),
+            fetch(`./stats/by-model?hours=${hours}`, { headers: getAuthHeaders() }),
+            fetch(`./stats/by-account?hours=${hours}`, { headers: getAuthHeaders() })
+        ]);
+
+        const [summaryData, modelData, accountData] = await Promise.all([
+            summaryResp.json(),
+            modelResp.json(),
+            accountResp.json()
+        ]);
+
+        // 更新统计卡片
+        if (summaryData.success) {
+            const d = summaryData.data;
+            document.getElementById('statsTotalTokens').textContent = formatNumber(d.total_tokens);
+            document.getElementById('statsTotalRequests').textContent = formatNumber(d.total_requests);
+            document.getElementById('statsUniqueAccounts').textContent = d.unique_accounts;
+            document.getElementById('statsUniqueModels').textContent = d.unique_models;
+        }
+
+        // 更新模型统计表格
+        if (modelData.success) {
+            const tbody = document.getElementById('modelStatsBody');
+            if (modelData.data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 20px; color: #666;">暂无数据</td></tr>';
+            } else {
+                tbody.innerHTML = modelData.data.map(m => `
+                    <tr style="border-bottom: 1px solid #eee;">
+                        <td style="padding: 10px; font-family: monospace;">${m.model}</td>
+                        <td style="padding: 10px; text-align: right; font-weight: bold;">${formatNumber(m.total_tokens)}</td>
+                        <td style="padding: 10px; text-align: right; color: #666;">${m.request_count}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        // 更新账号统计表格
+        if (accountData.success) {
+            const tbody = document.getElementById('accountStatsBody');
+            if (accountData.data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 20px; color: #666;">暂无数据</td></tr>';
+            } else {
+                tbody.innerHTML = accountData.data.map(a => `
+                    <tr style="border-bottom: 1px solid #eee;">
+                        <td style="padding: 10px; font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis;" title="${a.account_email}">${a.account_email}</td>
+                        <td style="padding: 10px; text-align: right; font-weight: bold;">${formatNumber(a.total_tokens)}</td>
+                        <td style="padding: 10px; text-align: right; color: #666;">${a.request_count}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        // 渲染图表
+        await renderCurrentChart();
+
+        showStatus('统计数据已加载', 'success');
+    } catch (error) {
+        showStatus(`加载统计失败: ${error.message}`, 'error');
+    }
+}
+
+async function clearTokenStats() {
+    if (!confirm('确定要清除所有 Token 统计数据吗？\n\n此操作不可撤销！')) {
+        return;
+    }
+
+    try {
+        const response = await fetch('./stats/clear', {
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            showStatus('统计数据已清除', 'success');
+            await loadTokenStats();
+        } else {
+            showStatus(data.error || '清除失败', 'error');
+        }
+    } catch (error) {
+        showStatus(`清除失败: ${error.message}`, 'error');
+    }
+}
+
+// =====================================================================
+// Token 统计图表功能
+// =====================================================================
+
+// 全局图表实例
+let trendChartInstance = null;
+let currentChartType = 'model';  // 当前图表类型: model | account | pie
+
+// 颜色方案
+const CHART_COLORS = [
+    '#667eea', '#764ba2', '#f093fb', '#4facfe',
+    '#43e97b', '#38f9d7', '#fa709a', '#fee140',
+    '#30cfd0', '#330867', '#a8edea', '#fed6e3'
+];
+
+// 切换图表选项卡
+function switchChartTab(type) {
+    currentChartType = type;
+
+    // 更新选项卡样式
+    document.querySelectorAll('.chart-tab').forEach(tab => {
+        tab.style.borderBottom = '3px solid transparent';
+        tab.style.fontWeight = 'normal';
+        tab.style.color = '#666';
+    });
+
+    const activeTab = document.getElementById(`chartTab${type.charAt(0).toUpperCase() + type.slice(1)}`);
+    if (activeTab) {
+        activeTab.style.borderBottom = '3px solid #4285f4';
+        activeTab.style.fontWeight = 'bold';
+        activeTab.style.color = '#4285f4';
+    }
+
+    // 重新渲染图表
+    renderCurrentChart();
+}
+
+// 渲染当前选中的图表
+async function renderCurrentChart() {
+    const hours = document.getElementById('statsTimeRange').value;
+
+    try {
+        if (currentChartType === 'model') {
+            await renderModelTrendChart(hours);
+        } else if (currentChartType === 'account') {
+            await renderAccountTrendChart(hours);
+        } else if (currentChartType === 'pie') {
+            await renderPieChart(hours);
+        }
+    } catch (error) {
+        console.error('渲染图表失败:', error);
+        showStatus(`图表渲染失败: ${error.message}`, 'error');
+    }
+}
+
+// 渲染模型趋势折线图
+async function renderModelTrendChart(hours) {
+    try {
+        const response = await fetch(`./stats/trend/model?hours=${hours}&granularity=hourly`, {
+            headers: getAuthHeaders()
+        });
+        const result = await response.json();
+
+        if (!result.success) {
+            throw new Error(result.error || '获取趋势数据失败');
+        }
+
+        const trendData = result.data || [];
+
+        // 提取所有模型名称
+        const models = new Set();
+        trendData.forEach(point => {
+            Object.keys(point.data).forEach(model => models.add(model));
+        });
+
+        // 构建数据集
+        const datasets = Array.from(models).map((model, index) => ({
+            label: model,
+            data: trendData.map(point => point.data[model] || 0),
+            borderColor: CHART_COLORS[index % CHART_COLORS.length],
+            backgroundColor: CHART_COLORS[index % CHART_COLORS.length] + '20',
+            tension: 0.4,
+            fill: true
+        }));
+
+        const labels = trendData.map(point => {
+            const date = new Date(point.period);
+            return date.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        });
+
+        renderLineChart(labels, datasets, '模型 Token 使用趋势');
+    } catch (error) {
+        console.error('渲染模型趋势图失败:', error);
+        throw error;
+    }
+}
+
+// 渲染账号趋势折线图
+async function renderAccountTrendChart(hours) {
+    try {
+        const response = await fetch(`./stats/trend/account?hours=${hours}`, {
+            headers: getAuthHeaders()
+        });
+        const result = await response.json();
+
+        if (!result.success) {
+            throw new Error(result.error || '获取趋势数据失败');
+        }
+
+        const trendData = result.data || [];
+
+        // 提取所有账号
+        const accounts = new Set();
+        trendData.forEach(point => {
+            Object.keys(point.data).forEach(account => accounts.add(account));
+        });
+
+        // 构建数据集
+        const datasets = Array.from(accounts).map((account, index) => ({
+            label: account,
+            data: trendData.map(point => point.data[account] || 0),
+            borderColor: CHART_COLORS[index % CHART_COLORS.length],
+            backgroundColor: CHART_COLORS[index % CHART_COLORS.length] + '20',
+            tension: 0.4,
+            fill: true
+        }));
+
+        const labels = trendData.map(point => {
+            const date = new Date(point.period);
+            return date.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        });
+
+        renderLineChart(labels, datasets, '账号 Token 使用趋势');
+    } catch (error) {
+        console.error('渲染账号趋势图失败:', error);
+        throw error;
+    }
+}
+
+// 渲染饼图（模型占比）
+async function renderPieChart(hours) {
+    try {
+        const response = await fetch(`./stats/by-model?hours=${hours}`, {
+            headers: getAuthHeaders()
+        });
+        const result = await response.json();
+
+        if (!result.success) {
+            throw new Error(result.error || '获取统计数据失败');
+        }
+
+        const modelData = result.data || [];
+
+        if (modelData.length === 0) {
+            // 显示空数据提示
+            destroyChart();
+            return;
+        }
+
+        const labels = modelData.map(m => m.model);
+        const data = modelData.map(m => m.total_tokens);
+        const backgroundColors = modelData.map((_, index) => CHART_COLORS[index % CHART_COLORS.length]);
+
+        destroyChart();
+
+        const ctx = document.getElementById('trendChart').getContext('2d');
+        trendChartInstance = new Chart(ctx, {
+            type: 'pie',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: data,
+                    backgroundColor: backgroundColors,
+                    borderWidth: 2,
+                    borderColor: '#fff'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'right',
+                        labels: {
+                            font: { size: 12 },
+                            padding: 15
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: '模型 Token 使用占比',
+                        font: { size: 16, weight: 'bold' }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const label = context.label || '';
+                                const value = formatNumber(context.parsed);
+                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = ((context.parsed / total) * 100).toFixed(1);
+                                return `${label}: ${value} tokens (${percentage}%)`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    } catch (error) {
+        console.error('渲染饼图失败:', error);
+        throw error;
+    }
+}
+
+// 渲染折线图（通用）
+function renderLineChart(labels, datasets, title) {
+    destroyChart();
+
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    trendChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false
+            },
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: {
+                        font: { size: 11 },
+                        padding: 10,
+                        usePointStyle: true
+                    }
+                },
+                title: {
+                    display: true,
+                    text: title,
+                    font: { size: 16, weight: 'bold' }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return `${context.dataset.label}: ${formatNumber(context.parsed.y)} tokens`;
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        callback: function(value) {
+                            return formatNumber(value);
+                        }
+                    }
+                },
+                x: {
+                    ticks: {
+                        maxRotation: 45,
+                        minRotation: 45,
+                        font: { size: 10 }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// 销毁现有图表实例
+function destroyChart() {
+    if (trendChartInstance) {
+        trendChartInstance.destroy();
+        trendChartInstance = null;
+    }
+}
+

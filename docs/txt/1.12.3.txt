@@ -1,0 +1,427 @@
+[23:59:24] [INFO] [CLIENT_DETECTOR] Detected client: Unknown Client (type=unknown, version=unknown, sanitize=True, fallback=False, scid=None)
+[23:59:25] [INFO] [GATEWAY] Chat request received
+[23:59:25] [INFO] [CLIENT_DETECTOR] Detected client: Unknown Client (type=unknown, version=unknown, sanitize=True, fallback=False, scid=None)
+[23:59:25] [INFO] [GATEWAY] [SCID] Using SCID from message fingerprint: scid_adae9b884bde1913...
+[23:59:25] [INFO] [SIGNATURE_DB] Database schema initialized (including tool_cache, session_cache, and conversation_state)
+[23:59:25] [INFO] [SIGNATURE_DB] Initialized with db_path=F:\antigravity2api\gcli2api\data\signature_cache.db, wal_mode=True, ttl=3600s
+[23:59:25] [INFO] [GATEWAY] [SCID] Thinking blocks scan: found 0 thinking blocks in 1 messages, latest_signature=none
+[23:59:25] [ROUTE] [GATEWAY] Model claude-4.5-opus-high-thinking -> Antigravity
+[23:59:25] [INFO] Trying backend: Antigravity for /chat/completions (model=claude-4.5-opus-high-thinking)
+[23:59:25] [INFO] [ANTIGRAVITY] Request from Unknown Client (unknown), User-Agent: Go-http-client/2.0
+[23:59:25] [INFO] [CredentialManager] ✓ 配额保护模块已加载
+[23:59:25] [INFO] [BackgroundScheduler] ✓ 启动自动刷新调度器 (间隔: 15分钟)
+[23:59:25] [INFO] [CredentialManager] ✓ 后台刷新已启动 (间隔: 15分钟)
+[23:59:25] [INFO] [SmartWarmup] ✓ 调度器已启动 (扫描间隔: 600秒, 冷却期: 14400秒)
+[23:59:25] [INFO] [CredentialManager] ✓ 智能预热已启动
+[23:59:25] [INFO] [ANTIGRAVITY] Received 94 tools, types=['function', 'function', 'function', 'function', 'function', 'function', 'function', 'function', 'function', 'function']... (showing first 10)
+[23:59:25] [INFO] [ANTIGRAVITY DEBUG] Checking 1 messages for thinking blocks...
+[23:59:25] [INFO] [ANTIGRAVITY] Request: model=claude-4.5-opus-high-thinking -> claude-opus-4-5-thinking, stream=True, thinking=True, anti_truncation=False
+[23:59:25] [INFO] [ANTIGRAVITY] Successfully validated 94 tools out of 94
+[23:59:25] [INFO] [ANTIGRAVITY] maxOutputTokens 低于下限: 4096 -> 16384
+[23:59:25] [INFO] [ANTIGRAVITY][thinking] 双向限制生效：maxOutputTokens 提升 16384 -> 17408 (thinkingBudget=1024, 实际输出空间=16384)
+[23:59:25] [INFO] [SmartWarmup] ========== 开始扫描配额状态 ==========
+[23:59:25] [INFO] [ANTIGRAVITY DEBUG] Request summary: contents_count=1, has_tools=True, model=claude-opus-4-5-thinking, enable_thinking=True
+[23:59:25] [INFO] [ANTIGRAVITY] Using credential: ag_graphic-streamer-nn8hz-1766352764.json (model=claude-opus-4-5-thinking, attempt=1, cred_switched=0/5)
+[23:59:27] [INFO] [SmartWarmup] 没有需要预热的任务 (跳过冷却期: 13, 跳过跟随模型: 1)
+[23:59:30] [INFO] [ANTIGRAVITY] Request successful with credential: ag_graphic-streamer-nn8hz-1766352764.json
+[23:59:30] [SUCCESS] [GATEWAY] Request succeeded via Antigravity
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 1: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": ""}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] First chunk has empty text and no finishReason, waiting for more chunks (this may indicate stream is starting or context is too long)
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 2: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u7528\u6237\u8981"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 3: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u6c42\u6211\u4f7f"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 4: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u7528AC"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 5: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "E\u5de5\u5177("}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 6: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "Aug"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 7: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "ment"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 8: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": " Context"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 9: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": " Engine"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] SSE line 10: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": ")\u6765"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:30] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:30] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 11: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u8c03\u67e5clip"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 12: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "roxy\u9879\u76ee\u5e76"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 13: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u4fdd\u5b58\u4e3amd\u6587"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 14: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u6863\u3002\u8ba9"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 15: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u6211\u5148\u4f7f"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 16: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u7528ACE\u5de5\u5177"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 17: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u6765\u5206\u6790\u8fd9\u4e2a"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 18: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u9879\u76ee\u7684"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 19: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u7ed3\u6784\u548c\u529f\u80fd"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 20: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u3002\n\n\u9996"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 21: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u5148\uff0c\u6211\u9700\u8981"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 22: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u58f0"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 23: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u660e\u6211"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 24: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u662f"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 25: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u4ec0"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 26: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u4e48\u6a21"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 27: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u578b"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:31] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] SSE line 28: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\uff0c"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:31] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 29: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u7136\u540e\u4f7f"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 30: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u7528ACE\u5de5\u5177"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 31: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u6765\u5206\u6790\u9879"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 32: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": "\u76ee\u3002"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 33: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "text": ""}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'text'], thought=True, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 34: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"thought": true, "thoughtSignature": "RXFjRENrZ0lDeEFDR0FJcVFIVE5lOG10bTE4R2lpcDhYUzhzYlFuN1F0SXZiWWZabEZaUjBvbEVoQVYrTEhmWnIzcC9weG81alVFR1p1TVNqclpOb1A3S2dEbzNVSklUQUZWdGxFQVNEQ205b05VVDVEM1RCVUY2bHhvTWdTOXpZcXU0ZU1Eem02cEVJakJaRlV2TnROZnRwSlQxK05aTnNEQUlOajFSZlVBdlVBY0RZMjlxZ1lrME1NS1FWYTdZbVRlUlN2ZjNrMFFtMmFVcWpBSVczUjl2SnoxMndSSlJhVDBBOWE3NFRkYUlodlYrT1UwSk9Vd3IxVU14V1FUazRiQ0kvTlgxLzFkQS95ZStPL0syalpLd0Fwa0F4RlhvYkVCTG9F
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['thought', 'thoughtSignature', 'text'], thought=True, has_signature=True
+[23:59:32] [INFO] [SIGNATURE_CACHE] 从 part 提取到 thoughtSignature: len=764, thinking_started=True, part_keys=['thought', 'thoughtSignature', 'text']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 35: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u6d6e"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [SIGNATURE_CACHE DEBUG] flush_thinking_buffer called: thinking_text_len=114, has_signature=True, signature_len=764
+[23:59:32] [INFO] [SIGNATURE_CACHE] Antigravity 流式响应缓存写入成功: thinking_len=114, model=claude-4.5-opus-high-thinking
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 36: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u6d6e"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 37: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u9171\u662f"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 38: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": " "}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 39: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "**Claude"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 40: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": " Son"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 41: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "net "}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 42: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "4"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 43: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "**"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 44: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": " \u6a21"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 45: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u578b"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 46: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u55b5\uff5e"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] SSE line 47: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": " ("}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:32] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:32] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 48: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u0e51\u2022"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 49: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u0300"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 50: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u3142\u2022\u0301"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 51: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": ")"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 52: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u2727\n\n\u597d"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 53: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u7684\u4e3b"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 54: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u4eba"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 55: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\uff01"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 56: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u6d6e\u6d6e\u9171"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 57: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u73b0"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 58: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u5728\u6765\u7528"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 59: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "ACE\u5de5\u5177\u8c03"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 60: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u67e5\u8fd9"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 61: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u4e2aclip"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:33] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:33] [INFO] [ANTIGRAVITY STREAM] SSE line 62: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "roxy\u9879\u76ee"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 63: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u55b5"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 64: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\uff5e"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 65: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u8ba9"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 66: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u6211\u5148"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 67: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u5168"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 68: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u9762\u5206\u6790\u4e00\u4e0b"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 69: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u8fd9\u4e2aGo"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 70: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u9879"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 71: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u76ee\u7684\u7ed3\u6784\u548c"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 72: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u529f\u80fd "}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 73: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u03c6"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 74: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "("}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 75: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u2267"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 76: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u03c9\u2266*)"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] SSE line 77: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": "\u266a"}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:34] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:34] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] SSE line 78: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": "mcp_acemcp-rust_search_context", "args": {"project_root_path": "F:/antigravity2api/cliproxy", "query": "What is the main purpose and architecture of this cliproxy project? How does it work as a CLI proxy?"}, "id": "toolu_vrtx_01Ahfdg9GyBbQJfKbyRVpov4"}}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "r
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:37] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['functionCall'], thought=None, has_signature=False
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] Tool call detected: name=mcp_acemcp-rust_search_context, id=toolu_vrtx_01Ahfdg9GyBbQJfKbyRVpov4
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] Immediately sending tool call: mcp_acemcp-rust_search_context
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] SSE line 79: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"target_file": "F:/antigravity2api/cliproxy/README.md"}, "id": "toolu_vrtx_017m8L1xLHZST3nA72oKqrBD"}}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:37] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['functionCall'], thought=None, has_signature=False
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] Tool call detected: name=read_file, id=toolu_vrtx_017m8L1xLHZST3nA72oKqrBD
+[23:59:37] [INFO] [ANTIGRAVITY STREAM] Immediately sending tool call: read_file
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] SSE line 80: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"target_file": "F:/antigravity2api/cliproxy/README_CN.md"}, "id": "toolu_vrtx_01K3JNTnhQeUP4AqEHE5qXq3"}}]}}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 3, "totalTokenCount": 58984}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=None, content_keys=['role', 'parts']
+[23:59:38] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['functionCall'], thought=None, has_signature=False
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] Tool call detected: name=read_file, id=toolu_vrtx_01K3JNTnhQeUP4AqEHE5qXq3
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] Immediately sending tool call: read_file
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] SSE line 81: {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": ""}]}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 58981, "candidatesTokenCount": 421, "totalTokenCount": 59402}, "modelVersion": "claude-opus-4-5-thinking", "responseId": "req_vrtx_011CXLoQ2xFcM3qYeE4EVVA8"}, "traceId": "309f109e99a4f68a"}
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] Response has 1 candidates
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] Candidate 0: finishReason=STOP, content_keys=['role', 'parts']
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] finishReason detected: STOP
+[23:59:38] [INFO] [ANTIGRAVITY STREAM DEBUG] Part: keys=['text'], thought=None, has_signature=False
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] Tool calls already sent immediately, count: 3
+[23:59:38] [WARNING] [ANTIGRAVITY STREAM] finish_reason not sent yet, sending now (final fallback)
+[23:59:38] [INFO] [ANTIGRAVITY STREAM] Stream ending. SSE lines: 81, Chunks sent: 47, Content buffer: 236, Tool calls: 3, has_valid_content: True, empty_parts_count: 2, finish_reason_sent: True
+[23:59:38] [INFO] [GATEWAY] [SCID] Streaming writeback complete: scid=scid_adae9b884bde191..., content_len=236, has_signature=False
+[2026-01-21 23:59:38 +0800] [30976] [INFO] 127.0.0.1:10638 - - [21/Jan/2026:23:59:38 +0800] "POST /gateway/v1/chat/completions 1.1" 200 - "-" "Go-http-client/2.0"
+[23:59:47] [INFO] [CLIENT_DETECTOR] Detected client: Unknown Client (type=unknown, version=unknown, sanitize=True, fallback=False, scid=None)
+[23:59:47] [INFO] [GATEWAY] Chat request received
+[23:59:47] [INFO] [CLIENT_DETECTOR] Detected client: Unknown Client (type=unknown, version=unknown, sanitize=True, fallback=False, scid=None)
+[23:59:47] [INFO] [GATEWAY] [SCID] Using SCID from message fingerprint: scid_adae9b884bde1913...
+[23:59:47] [INFO] [SIGNATURE_DB] Database schema initialized (including tool_cache, session_cache, and conversation_state)
+[23:59:47] [INFO] [SIGNATURE_DB] Initialized with db_path=F:\antigravity2api\gcli2api\data\signature_cache.db, wal_mode=True, ttl=3600s
+[23:59:47] [INFO] [GATEWAY] [SCID] Merged messages with authoritative history: 5 -> 5
+[23:59:47] [INFO] [GATEWAY] [SCID] Thinking blocks scan: found 1 thinking blocks in 5 messages, latest_signature=extracted
+[23:59:47] [INFO] [GATEWAY] [SCID] Sanitized messages: client=Unknown Client, messages=5->5, thinking=True->False
+[23:59:47] [ROUTE] [GATEWAY] Model claude-4.5-opus-high-thinking -> Antigravity
+[23:59:47] [INFO] Trying backend: Antigravity for /chat/completions (model=claude-4.5-opus-high-thinking)
+[23:59:47] [INFO] [ANTIGRAVITY] Request from Unknown Client (unknown), User-Agent: Go-http-client/2.0
+[23:59:47] [INFO] [ANTIGRAVITY] Received 94 tools, types=['function', 'function', 'function', 'function', 'function', 'function', 'function', 'function', 'function', 'function']... (showing first 10)
+[23:59:47] [INFO] [ANTIGRAVITY DEBUG] Checking 5 messages for thinking blocks...
+[23:59:47] [INFO] [ANTIGRAVITY DEBUG] Message 1 (assistant): content_type=str, content_len=236, has_think_tag=True, has_reasoning_tag=False, content_preview='<think>
+用户要求我使用ACE工具(Augment Context Engine)来调查cliproxy项目并保存为md文档。让我先使用ACE工具来分析这个项目的结构和功能。
+
+首先，我需要声明我是什么模型，然后使用ACE工具来分析项目。
+</think>
+浮浮酱是 **Claude Sonn...'
+[23:59:47] [INFO] [ANTIGRAVITY] 从 <think> 标签内容恢复 signature（字符串格式）: thinking_len=114
+[23:59:47] [INFO] [ANTIGRAVITY] 历史消息中检测到有效的 thinking block（全部验证通过），保持 thinking 模式启用
+[23:59:47] [INFO] [ANTIGRAVITY] Request: model=claude-4.5-opus-high-thinking -> claude-opus-4-5-thinking, stream=True, thinking=True, anti_truncation=False
+[23:59:48] [INFO] [MESSAGE_CONVERTER DEBUG] Processing assistant message: content_type=str, content_len=236
+[23:59:48] [INFO] [MESSAGE_CONVERTER DEBUG] String content has_think_tag=True, first_100_chars='<think>
+用户要求我使用ACE工具(Augment Context Engine)来调查cliproxy项目并保存为md文档。让我先使用ACE工具来分析这个项目的结构和功能。
+
+首先，我需要声明...'
+[23:59:48] [INFO] [MESSAGE_CONVERTER DEBUG] Found thinking_match: match_len=131
+[23:59:48] [INFO] [MESSAGE_CONVERTER DEBUG] Extracted thinking_content: len=114, first_50='用户要求我使用ACE工具(Augment Context Engine)来调查cliproxy项目并...'
+[23:59:48] [INFO] [MESSAGE_CONVERTER] 保留历史 thinking block (字符串格式) 供上游处理: thinking_len=114
+[23:59:48] [INFO] [ANTIGRAVITY] Recovered tool_name from mapping: mcp_acemcp-rust_search_context
+[23:59:48] [INFO] [ANTIGRAVITY] Recovered tool_name from mapping: read_file
+[23:59:48] [INFO] [ANTIGRAVITY] Recovered tool_name from mapping: read_file
+[23:59:48] [INFO] [ANTIGRAVITY] Recovered leading thoughtSignature (merged fallback) for tool_use continuation; keeping thinking enabled
+[23:59:48] [INFO] [ANTIGRAVITY] Successfully validated 94 tools out of 94
+[23:59:48] [INFO] [ANTIGRAVITY] maxOutputTokens 低于下限: 4096 -> 16384
+[23:59:48] [INFO] [ANTIGRAVITY][thinking] 双向限制生效：maxOutputTokens 提升 16384 -> 17408 (thinkingBudget=1024, 实际输出空间=16384)
+[23:59:48] [INFO] [ANTIGRAVITY DEBUG] Request summary: contents_count=5, has_tools=True, model=claude-opus-4-5-thinking, enable_thinking=True
+[23:59:48] [INFO] [ANTIGRAVITY DEBUG] This is a tool-call-follow-up request
+[23:59:48] [INFO] [ANTIGRAVITY DEBUG] Tool result 2-0: id=toolu_vrtx_01Ahfdg9GyBbQJfKbyRVpov4, name=mcp_acemcp-rust_search_context, output_type=str, output_length=19631
+[23:59:48] [INFO] [ANTIGRAVITY DEBUG] Tool result 3-0: id=toolu_vrtx_017m8L1xLHZST3nA72oKqrBD, name=read_file, output_type=str, output_length=9042
+[23:59:48] [INFO] [ANTIGRAVITY DEBUG] Tool result 4-0: id=toolu_vrtx_01K3JNTnhQeUP4AqEHE5qXq3, name=read_file, output_type=str, output_length=6383
+[23:59:48] [INFO] [ANTIGRAVITY] Using credential: ag_graphic-streamer-nn8hz-1766352764.json (model=claude-opus-4-5-thinking, attempt=1, cred_switched=0/5)
+[23:59:51] [ERROR] [ANTIGRAVITY] API error (400): {
+  "error": {
+    "code": 400,
+    "message": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content.0: Invalid `signature` in `thinking` block\"},\"request_id\":\"req_vrtx_011CXLoRjQ83YrssfbEtvw4A\"}",
+    "status": "INVALID_ARGUMENT"
+  }
+}
+
+[23:59:51] [WARNING] [ANTIGRAVITY] 400 客户端错误，不重试 (model=claude-opus-4-5-thinking)
+[23:59:51] [ERROR] [ANTIGRAVITY] Request failed with model claude-opus-4-5-thinking: Antigravity API error (400): {
+  "error": {
+    "code": 400,
+    "message": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content.0: Invalid `signature` in `thinking` block\"},\"reque
+[23:59:51] [INFO] [ANTIGRAVITY] 未知错误类型，不触发降级
+[23:59:51] [SUCCESS] [GATEWAY] Request succeeded via Antigravity
+[2026-01-21 23:59:51 +0800] [30976] [INFO] 127.0.0.1:10672 - - [21/Jan/2026:23:59:51 +0800] "POST /gateway/v1/chat/completions 1.1" 200 - "-" "Go-http-client/2.0"

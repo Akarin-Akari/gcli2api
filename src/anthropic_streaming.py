@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from typing import Any, AsyncIterator, Dict, Optional, List
+from typing import Any, AsyncIterator, Dict, Optional, List, Union
 
 from log import log
 from .signature_cache import cache_signature, cache_tool_signature, get_last_signature
@@ -208,7 +208,7 @@ class _StreamingState:
 
 
 async def antigravity_sse_to_anthropic_sse(
-    lines: AsyncIterator[str],
+    lines: AsyncIterator[Union[str, bytes]],
     *,
     model: str,
     message_id: str,
@@ -288,6 +288,12 @@ async def antigravity_sse_to_anthropic_sse(
     try:
         async for line in lines:
             ready_output: list[bytes] = []
+            
+            # ✅ [FIX 2026-01-22] 修复类型错误：处理 bytes 和 str 两种类型
+            # response.aiter_lines() 可能返回 bytes 或 str，需要统一处理
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="ignore")
+            
             if not line or not line.startswith("data: "):
                 continue
 

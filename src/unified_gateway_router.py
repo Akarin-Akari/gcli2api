@@ -14,7 +14,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, AsyncIterator, Dict, List, Optional, Set, Tuple
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.responses import StreamingResponse as StarletteStreamingResponse
 
 from log import log
-from src.httpx_client import http_client
+from src.httpx_client import http_client, safe_close_client
 from src.utils import authenticate_bearer, authenticate_bearer_allow_local_dummy
 
 # Augment Compatibility Layer - Bugment Tool Loop & Nodes Bridge
@@ -68,6 +68,154 @@ RETRY_CONFIG = {
     # 注意：移除 503 重试，避免把「额度/降级语义」的 503 放大成重试风暴
     "retry_on_status": [500, 502, 504],  # 需要重试的状态码
 }
+
+
+# ==================== Copilot 熔断机制 ====================
+# [FIX 2026-01-21] 当 Copilot 返回 402 余额不足时，本轮对话不再尝试 Copilot
+# 这是一个会话级别的熔断状态，服务重启后重置
+
+_copilot_circuit_breaker_open = False  # True = 熔断开启，跳过 Copilot
+
+
+def is_copilot_circuit_open() -> bool:
+    """检查 Copilot 熔断器是否开启"""
+    return _copilot_circuit_breaker_open
+
+
+def open_copilot_circuit_breaker(reason: str = ""):
+    """
+    开启 Copilot 熔断器
+
+    当 Copilot 返回 402 余额不足时调用此函数，
+    后续请求将跳过 Copilot 后端
+    """
+    global _copilot_circuit_breaker_open
+    _copilot_circuit_breaker_open = True
+    log.warning(f"[COPILOT CIRCUIT BREAKER] 熔断器已开启，后续请求将跳过 Copilot。原因: {reason}", tag="GATEWAY")
+
+
+def reset_copilot_circuit_breaker():
+    """
+    重置 Copilot 熔断器
+
+    可以在需要时手动调用，或者在服务重启时自动重置
+    """
+    global _copilot_circuit_breaker_open
+    _copilot_circuit_breaker_open = False
+    log.info("[COPILOT CIRCUIT BREAKER] 熔断器已重置", tag="GATEWAY")
+
+
+# ==================== Backend Health Manager ====================
+# [FIX 2026-01-21] 后端健康状态管理器
+# 根据后端的成功/失败记录动态调整优先级
+
+class BackendHealthManager:
+    """
+    后端健康状态管理器
+
+    跟踪每个后端的健康状态，用于动态调整路由优先级：
+    - 成功请求增加健康分数
+    - 失败请求降低健康分数
+    - 健康分数影响后端选择顺序
+    """
+
+    def __init__(self):
+        # 健康状态: {backend_key: {"success": int, "failure": int, "last_success": float, "last_failure": float}}
+        self._health_data: Dict[str, Dict] = {}
+        self._lock = asyncio.Lock()
+
+    def _get_or_create(self, backend_key: str) -> Dict:
+        """获取或创建后端健康数据"""
+        if backend_key not in self._health_data:
+            self._health_data[backend_key] = {
+                "success": 0,
+                "failure": 0,
+                "last_success": 0.0,
+                "last_failure": 0.0,
+                "consecutive_failures": 0,
+            }
+        return self._health_data[backend_key]
+
+    async def record_success(self, backend_key: str) -> None:
+        """记录后端请求成功"""
+        async with self._lock:
+            data = self._get_or_create(backend_key)
+            data["success"] += 1
+            data["last_success"] = time.time()
+            data["consecutive_failures"] = 0  # 重置连续失败计数
+            log.debug(f"[BACKEND HEALTH] {backend_key} 成功 (total={data['success']})", tag="GATEWAY")
+
+    async def record_failure(self, backend_key: str, error_code: int = 0) -> None:
+        """记录后端请求失败"""
+        async with self._lock:
+            data = self._get_or_create(backend_key)
+            data["failure"] += 1
+            data["last_failure"] = time.time()
+            data["consecutive_failures"] += 1
+            log.debug(
+                f"[BACKEND HEALTH] {backend_key} 失败 (code={error_code}, consecutive={data['consecutive_failures']})",
+                tag="GATEWAY"
+            )
+
+    def get_health_score(self, backend_key: str) -> float:
+        """
+        计算后端健康分数 (0-100)
+
+        计算公式：
+        - 基础分数 = 成功率 * 60
+        - 时效分数 = 最近成功加分 * 20
+        - 稳定分数 = (1 - 连续失败惩罚) * 20
+        """
+        data = self._health_data.get(backend_key)
+        if not data:
+            return 50.0  # 默认中等分数
+
+        total = data["success"] + data["failure"]
+        if total == 0:
+            return 50.0
+
+        # 成功率分数 (0-60)
+        success_rate = data["success"] / total
+        success_score = success_rate * 60
+
+        # 时效分数 (0-20) - 最近 5 分钟内有成功则加分
+        now = time.time()
+        recency_score = 0.0
+        if data["last_success"] > 0:
+            time_since_success = now - data["last_success"]
+            if time_since_success < 300:  # 5 分钟内
+                recency_score = 20.0 * (1 - time_since_success / 300)
+
+        # 稳定分数 (0-20) - 连续失败越多分数越低
+        consecutive_failures = data["consecutive_failures"]
+        stability_score = max(0, 20.0 - consecutive_failures * 5)
+
+        return min(100.0, success_score + recency_score + stability_score)
+
+    def get_priority_adjustment(self, backend_key: str) -> float:
+        """
+        获取优先级调整值
+
+        健康分数高的后端获得负调整（优先级提高）
+        健康分数低的后端获得正调整（优先级降低）
+
+        返回值范围: -0.5 到 +0.5
+        """
+        score = self.get_health_score(backend_key)
+        # 将 0-100 的分数映射到 -0.5 到 +0.5
+        # 分数 50 -> 调整 0
+        # 分数 100 -> 调整 -0.5 (优先级提高)
+        # 分数 0 -> 调整 +0.5 (优先级降低)
+        return (50 - score) / 100
+
+
+# 全局后端健康管理器实例
+_backend_health_manager = BackendHealthManager()
+
+
+def get_backend_health_manager() -> BackendHealthManager:
+    """获取后端健康管理器实例"""
+    return _backend_health_manager
 
 
 # ==================== Prompt Model Routing ====================
@@ -1936,27 +2084,70 @@ BACKENDS = {
         "max_retries": 2,  # 最大重试次数
         "enabled": True,
     },
+    "kiro-gateway": {
+        "name": "Kiro Gateway",
+        # Kiro Gateway 专门用于 Claude 模型的降级
+        # 优先级调整为 2，次于 Antigravity，高于 Copilot
+        # 支持的模型：claude-sonnet-4.5, claude-opus-4.5, claude-haiku-4.5, claude-sonnet-4
+        "base_url": os.getenv("KIRO_GATEWAY_BASE_URL", "http://127.0.0.1:9876/v1"),
+        "priority": 2,  # 优先级次于 Antigravity，高于 Copilot
+        "timeout": float(os.getenv("KIRO_GATEWAY_TIMEOUT", "120.0")),
+        "stream_timeout": float(os.getenv("KIRO_GATEWAY_STREAM_TIMEOUT", "600.0")),
+        "max_retries": int(os.getenv("KIRO_GATEWAY_MAX_RETRIES", "2")),
+        "enabled": os.getenv("KIRO_GATEWAY_ENABLED", "true").lower() in ("true", "1", "yes"),
+        # Kiro Gateway 支持的模型列表（Claude 4.5 全家桶 + Claude Sonnet 4）
+        "supported_models": [
+            "claude-sonnet-4.5", "claude-opus-4.5", "claude-haiku-4.5", "claude-sonnet-4",
+        ],
+    },
+    "anyrouter": {
+        "name": "AnyRouter",
+        # AnyRouter 是公益站第三方 API，使用 Anthropic 格式
+        # 优先级在 Kiro Gateway 之后，Copilot 之前
+        "base_urls": [
+            url.strip() for url in os.getenv(
+                "ANYROUTER_BASE_URLS",
+                "https://anyrouter.top,https://pmpjfbhq.cn-nb1.rainapp.top,https://a-ocnfniawgw.cn-shanghai.fcapp.run"
+            ).split(",") if url.strip()
+        ],
+        "api_keys": [
+            key.strip() for key in os.getenv(
+                "ANYROUTER_API_KEYS",
+                "sk-E4L18390pp12BacrKa7IJV8hgztEo8SsPKFdtSYGx6vLEbDK,sk-be7LKJwag3qXSRL77tVbxUsIHEi71UfAVOvqjGI13BJiXGD5"
+            ).split(",") if key.strip()
+        ],
+        "priority": 3,  # 优先级次于 Kiro Gateway，高于 Copilot
+        "timeout": float(os.getenv("ANYROUTER_TIMEOUT", "120.0")),
+        "stream_timeout": float(os.getenv("ANYROUTER_STREAM_TIMEOUT", "600.0")),
+        "max_retries": int(os.getenv("ANYROUTER_MAX_RETRIES", "1")),  # 每个端点只重试1次
+        "enabled": os.getenv("ANYROUTER_ENABLED", "true").lower() in ("true", "1", "yes"),
+        # AnyRouter 支持的模型列表（来自官方）
+        "supported_models": [
+            # Claude 4.5 系列
+            "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",
+            # Claude 4 系列
+            "claude-opus-4-20250514", "claude-opus-4-1-20250805", "claude-sonnet-4-20250514",
+            # Claude 3.7 系列
+            "claude-3-7-sonnet-20250219",
+            # Claude 3.5 系列
+            "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022",
+            # 其他模型
+            "gemini-2.5-pro", "gpt-5-codex",
+        ],
+        # 使用 Anthropic 格式（/v1/messages 端点）
+        "api_format": "anthropic",
+        # 当前使用的端点和 Key 索引（运行时状态）
+        "_current_url_index": 0,
+        "_current_key_index": 0,
+    },
     "copilot": {
         "name": "Copilot",
         "base_url": "http://127.0.0.1:8141/v1",
-        "priority": 2,
+        "priority": 4,  # 优先级最低，作为最终兜底
         "timeout": 120.0,  # 思考模型需要更长时间
         "stream_timeout": 600.0,  # 流式请求超时（10分钟，GPT-5.2思考模型）
         "max_retries": 3,  # 最大重试次数
         "enabled": True,
-    },
-    "kiro-gateway": {
-        "name": "Kiro Gateway",
-        # 注意：endpoint 传入时是 /chat/completions（不带 /v1）
-        # 如果 kiro-gateway 提供 /v1 端点，base_url 应该包含 /v1
-        # 最终 URL = base_url + endpoint = http://127.0.0.1:9046/v1 + /chat/completions = http://127.0.0.1:9046/v1/chat/completions
-        # 如果 kiro-gateway 不使用 /v1 前缀，可以通过环境变量设置为 http://127.0.0.1:9046
-        "base_url": os.getenv("KIRO_GATEWAY_BASE_URL", "http://127.0.0.1:9046/v1"),  # 默认包含 /v1（假设 kiro-gateway 提供 /v1 端点）
-        "priority": 3,  # 优先级最低，作为兜底或特定模型路由
-        "timeout": float(os.getenv("KIRO_GATEWAY_TIMEOUT", "120.0")),  # 普通请求超时
-        "stream_timeout": float(os.getenv("KIRO_GATEWAY_STREAM_TIMEOUT", "600.0")),  # 流式请求超时
-        "max_retries": int(os.getenv("KIRO_GATEWAY_MAX_RETRIES", "2")),  # 最大重试次数
-        "enabled": os.getenv("KIRO_GATEWAY_ENABLED", "true").lower() in ("true", "1", "yes"),  # 可通过环境变量控制
     },
 }
 
@@ -1969,6 +2160,40 @@ KIRO_GATEWAY_MODELS = (
     if KIRO_GATEWAY_MODELS_ENV
     else []
 )
+
+# ==================== 模型特定路由规则 ====================
+# 从 config/gateway.yaml 加载 model_routing 配置
+# 支持为特定模型配置后端优先级链和降级条件
+try:
+    from src.gateway.config_loader import (
+        load_model_routing_config,
+        get_model_routing_rule,
+        reload_model_routing_config,
+        ModelRoutingRule,
+        BackendEntry,
+    )
+    MODEL_ROUTING = load_model_routing_config()
+    if MODEL_ROUTING:
+        log.info(f"[MODEL_ROUTING] 已加载 {len(MODEL_ROUTING)} 条模型路由规则", tag="GATEWAY")
+        for model_name, rule in MODEL_ROUTING.items():
+            if rule.enabled:
+                # 显示完整的后端链（包含目标模型）
+                chain_str = " -> ".join([
+                    f"{entry.backend}({entry.model})" for entry in rule.backend_chain
+                ])
+                log.info(f"  - {model_name}: {chain_str}", tag="GATEWAY")
+except ImportError as e:
+    log.warning(f"[MODEL_ROUTING] 无法加载配置模块: {e}", tag="GATEWAY")
+    MODEL_ROUTING = {}
+    get_model_routing_rule = lambda model: None
+    ModelRoutingRule = None
+    BackendEntry = None
+except Exception as e:
+    log.warning(f"[MODEL_ROUTING] 加载配置失败: {e}", tag="GATEWAY")
+    MODEL_ROUTING = {}
+    get_model_routing_rule = lambda model: None
+    ModelRoutingRule = None
+    BackendEntry = None
 
 # ==================== 智能模型路由 ====================
 # 策略：根据 Antigravity 实际支持的模型精确路由
@@ -2140,6 +2365,63 @@ ANTIGRAVITY_SUPPORTED_PATTERNS = {
     "gpt-oos",
 }
 
+# Kiro Gateway 支持的模型列表（Claude 4.5 全家桶 + Claude Sonnet 4）
+KIRO_GATEWAY_SUPPORTED_MODELS = {
+    "claude-sonnet-4.5", "claude-opus-4.5", "claude-haiku-4.5", "claude-sonnet-4",
+}
+
+
+def is_kiro_gateway_supported(model: str) -> bool:
+    """
+    检查模型是否被 Kiro Gateway 支持
+
+    Kiro Gateway 支持的模型：
+    - claude-sonnet-4.5 (含 thinking 变体)
+    - claude-opus-4.5 (含 thinking 变体)
+    - claude-haiku-4.5
+    - claude-sonnet-4
+
+    Args:
+        model: 模型名称
+
+    Returns:
+        是否被 Kiro Gateway 支持
+    """
+    if not model:
+        return False
+
+    model_lower = model.lower()
+
+    # 必须是 Claude 模型
+    if "claude" not in model_lower:
+        return False
+
+    # 规范化模型名称（移除 -thinking 等后缀）
+    normalized = normalize_model_name(model)
+
+    # 精确匹配
+    if normalized in KIRO_GATEWAY_SUPPORTED_MODELS:
+        return True
+
+    # 模糊匹配 Claude 4.5 系列
+    if "claude" in normalized:
+        # 检查版本号 4.5 / 4-5
+        has_45 = bool(re.search(r'4[.\-]5', normalized))
+        has_sonnet = "sonnet" in normalized
+        has_opus = "opus" in normalized
+        has_haiku = "haiku" in normalized
+
+        if has_45 and (has_sonnet or has_opus or has_haiku):
+            return True
+
+        # 检查 claude-sonnet-4（不是 4.5）
+        has_4 = bool(re.search(r'sonnet[.\-]?4(?![.\-]5)', normalized)) or \
+                bool(re.search(r'4[.\-]?sonnet(?![.\-]5)', normalized))
+        if has_4 and has_sonnet:
+            return True
+
+    return False
+
 # 用于提取模型核心信息的辅助函数
 def normalize_model_name(model: str) -> str:
     """规范化模型名称，移除变体后缀"""
@@ -2168,10 +2450,10 @@ def is_antigravity_supported(model: str) -> bool:
     Antigravity 支持：
     - Gemini 2.5 系列 (gemini-2.5-pro, gemini-2.5-flash 等)
     - Gemini 3 系列 (gemini-3-pro, gemini-3-flash)
-    - Claude 4.5 系列 (sonnet-4.5, opus-4.5, haiku-4.5)
+    - Claude 4.5 系列 (sonnet-4.5, opus-4.5) - 注意：haiku 不支持！
     - GPT OOS 120B
 
-    注意：haiku 模型会被映射到 gemini-3-flash，但仍然走 Antigravity
+    注意：Antigravity 不支持 Haiku 模型，Haiku 直接走 Kiro/Copilot
     """
     import re
     normalized = normalize_model_name(model)
@@ -2187,19 +2469,22 @@ def is_antigravity_supported(model: str) -> bool:
         # 其他 Gemini 版本（2.0, 1.5 等）不支持
         return False
 
-    # 检查 Claude - 支持 4.5 系列的 sonnet, opus, haiku
+    # 检查 Claude - 支持 4.5 系列的 sonnet, opus（不支持 haiku！）
     if "claude" in model_lower:
+        # Haiku 模型不支持！直接返回 False
+        if "haiku" in model_lower:
+            return False
+
         # 检查版本号 4.5 / 4-5
         # 支持格式: claude-sonnet-4.5, claude-4.5-sonnet, claude-opus-4-5-20251101 等
         # 使用正则匹配 4.5 或 4-5 格式
         has_45 = bool(re.search(r'4[.\-]5', normalized))
 
-        # 检查模型类型
+        # 检查模型类型（只支持 sonnet 和 opus）
         has_sonnet = "sonnet" in normalized
         has_opus = "opus" in normalized
-        has_haiku = "haiku" in normalized
 
-        if has_45 and (has_sonnet or has_opus or has_haiku):
+        if has_45 and (has_sonnet or has_opus):
             return True
 
         # 其他 Claude 版本不支持
@@ -2213,18 +2498,124 @@ def is_antigravity_supported(model: str) -> bool:
     return False
 
 
+# AnyRouter 支持的模型列表（来自官方）
+ANYROUTER_SUPPORTED_MODELS = {
+    # Claude 4.5 系列
+    "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",
+    "claude-opus-4.5", "claude-sonnet-4.5", "claude-haiku-4.5",
+    # Claude 4 系列
+    "claude-opus-4-20250514", "claude-opus-4-1-20250805", "claude-sonnet-4-20250514",
+    "claude-opus-4", "claude-sonnet-4",
+    # Claude 3.7 系列
+    "claude-3-7-sonnet-20250219", "claude-3.7-sonnet",
+    # Claude 3.5 系列
+    "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022",
+    "claude-3.5-sonnet", "claude-3.5-haiku",
+    # 其他模型
+    "gemini-2.5-pro", "gpt-5-codex",
+}
+
+
+def is_anyrouter_supported(model: str) -> bool:
+    """
+    检查模型是否被 AnyRouter 支持
+
+    AnyRouter 支持：
+    - 所有 Claude 模型系列（3.5, 3.7, 4, 4.5）
+    - Gemini 2.5 Pro
+    - GPT-5 Codex
+
+    Args:
+        model: 模型名称
+
+    Returns:
+        是否被 AnyRouter 支持
+    """
+    if not model:
+        return False
+
+    model_lower = model.lower()
+
+    # 规范化模型名称（移除 -thinking 等后缀）
+    normalized = normalize_model_name(model)
+
+    # 精确匹配
+    if normalized in ANYROUTER_SUPPORTED_MODELS:
+        return True
+
+    # 检查 Claude 模型
+    if "claude" in model_lower:
+        return True
+
+    # 检查 Gemini 2.5
+    if "gemini" in model_lower and "2.5" in model_lower:
+        return True
+
+    # 检查 GPT-5 Codex
+    if "gpt-5" in model_lower and "codex" in model_lower:
+        return True
+
+    return False
+
+
 def get_sorted_backends() -> List[Tuple[str, Dict]]:
-    """获取按优先级排序的后端列表"""
+    """
+    获取按优先级排序的后端列表
+
+    [FIX 2026-01-21] 动态权重调整：
+    - 基础优先级来自配置 (priority 字段)
+    - 根据后端健康状态动态调整优先级
+    - 健康的后端优先级提高，不健康的后端优先级降低
+    """
     enabled_backends = [(k, v) for k, v in BACKENDS.items() if v.get("enabled", True)]
-    return sorted(enabled_backends, key=lambda x: x[1]["priority"])
+
+    # 获取健康管理器
+    health_mgr = get_backend_health_manager()
+
+    # 计算动态优先级: 基础优先级 + 健康调整
+    def get_dynamic_priority(item: Tuple[str, Dict]) -> float:
+        backend_key, config = item
+        base_priority = config["priority"]
+        health_adjustment = health_mgr.get_priority_adjustment(backend_key)
+        return base_priority + health_adjustment
+
+    return sorted(enabled_backends, key=get_dynamic_priority)
+
+
+def get_backend_base_url(backend_config: Dict) -> Optional[str]:
+    """
+    获取后端的 base_url
+
+    处理两种配置格式：
+    1. base_url: 单个 URL（如 antigravity, copilot, kiro-gateway）
+    2. base_urls: URL 列表（如 anyrouter）
+
+    Args:
+        backend_config: 后端配置字典
+
+    Returns:
+        base_url 字符串，如果都不存在则返回 None
+    """
+    # 优先使用 base_url（单数）
+    if "base_url" in backend_config:
+        return backend_config["base_url"]
+
+    # 然后尝试 base_urls（复数），取第一个
+    if "base_urls" in backend_config:
+        base_urls = backend_config["base_urls"]
+        if base_urls and len(base_urls) > 0:
+            return base_urls[0]
+
+    return None
 
 
 def get_backend_for_model(model: str) -> Optional[str]:
     """
     根据模型名称获取指定后端
 
-    路由策略：
-    1. 检查是否配置了 Kiro Gateway 路由（优先级最高，用于特定模型）
+    路由策略（按优先级）：
+    0. 检查是否有模型特定路由规则（model_routing 配置，优先级最高）
+    1. 检查是否配置了 Kiro Gateway 路由（环境变量）
     2. 检查是否在 Antigravity 支持列表中
     3. 支持 -> Antigravity（按 token 计费，更经济）
     4. 不支持 -> Copilot（按次计费，但支持更多模型）
@@ -2233,37 +2624,324 @@ def get_backend_for_model(model: str) -> Optional[str]:
     - Gemini 3 系列: gemini-3-pro, gemini-3-flash
     - Claude 4.5 系列: claude-sonnet-4.5, claude-opus-4.5 (含 thinking 变体)
     - GPT: gpt-oos-120b
-    
+
     Kiro Gateway 路由：
     - 通过环境变量 KIRO_GATEWAY_MODELS 配置
     - 格式：逗号分隔的模型名称列表
+
+    Model Routing 规则（新增）：
+    - 通过 config/gateway.yaml 的 model_routing 配置
+    - 支持多后端优先级链和降级条件
+    """
+    backend, _ = get_backend_and_model_for_routing(model)
+    return backend
+
+
+def get_backend_and_model_for_routing(model: str) -> Tuple[Optional[str], str]:
+    """
+    根据模型名称获取指定后端和目标模型
+
+    这是 get_backend_for_model 的增强版本，返回后端名称和目标模型。
+    当配置了模型级别的降级（如 claude-sonnet-4.5 -> gemini-3-pro）时，
+    目标模型可能与请求模型不同。
+
+    Args:
+        model: 请求的模型名称
+
+    Returns:
+        Tuple[Optional[str], str]: (后端名称, 目标模型名称)
+        - 如果没有找到后端，返回 (None, model)
+        - 如果配置了模型映射，返回 (backend, target_model)
     """
     if not model:
         model = ""
-    
+
     model_lower = model.lower()
+
+    # 0. 优先检查模型特定路由规则（来自 gateway.yaml）
+    routing_rule = get_model_routing_rule(model)
+    if routing_rule and routing_rule.enabled and routing_rule.backend_chain:
+        first_entry = routing_rule.get_first_backend()
+        if first_entry:
+            # 检查第一个后端是否启用
+            backend_config = BACKENDS.get(first_entry.backend, {})
+            if backend_config.get("enabled", True):
+                log.route(
+                    f"Model {model} -> {first_entry.backend}({first_entry.model}) "
+                    f"(model_routing rule)",
+                    tag="GATEWAY"
+                )
+                return first_entry.backend, first_entry.model
+            else:
+                # 第一个后端未启用，尝试下一个
+                for entry in routing_rule.backend_chain[1:]:
+                    backend_config = BACKENDS.get(entry.backend, {})
+                    if backend_config.get("enabled", True):
+                        log.route(
+                            f"Model {model} -> {entry.backend}({entry.model}) "
+                            f"(model_routing fallback, first backend disabled)",
+                            tag="GATEWAY"
+                        )
+                        return entry.backend, entry.model
+
+    # ✅ [FIX 2026-01-22] 模型特定优先级规则
+    # 1. Sonnet 4.5 优先使用 Kiro Gateway
+    if "sonnet" in model_lower and ("4.5" in model_lower or "4-5" in model_lower):
+        if is_kiro_gateway_supported(model):
+            log.route(f"Model {model} -> Kiro Gateway (sonnet 4.5 priority)", tag="GATEWAY")
+            return "kiro-gateway", model
     
-    # 1. 优先检查 Kiro Gateway 路由配置
+    # 2. Opus 4.5 优先使用 Antigravity
+    if "opus" in model_lower and ("4.5" in model_lower or "4-5" in model_lower):
+        if is_antigravity_supported(model):
+            log.route(f"Model {model} -> Antigravity (opus 4.5 priority)", tag="GATEWAY")
+            return "antigravity", model
+
+    # 3. 检查 Kiro Gateway 路由配置（环境变量）
     if KIRO_GATEWAY_MODELS:
         # 精确匹配
         if model_lower in KIRO_GATEWAY_MODELS:
             log.route(f"Model {model} -> Kiro Gateway (configured)", tag="GATEWAY")
-            return "kiro-gateway"
-        
+            return "kiro-gateway", model
+
         # 模糊匹配（检查模型名是否包含配置的模式）
         normalized_model = normalize_model_name(model)
         for kiro_model in KIRO_GATEWAY_MODELS:
             if normalized_model == kiro_model.lower() or normalized_model.startswith(kiro_model.lower()):
                 log.route(f"Model {model} -> Kiro Gateway (pattern match: {kiro_model})", tag="GATEWAY")
-                return "kiro-gateway"
-    
-    # 2. 检查 Antigravity 支持
+                return "kiro-gateway", model
+
+    # 4. 检查 Antigravity 支持
     if is_antigravity_supported(model):
         log.route(f"Model {model} -> Antigravity", tag="GATEWAY")
-        return "antigravity"
+        return "antigravity", model
     else:
         log.route(f"Model {model} -> Copilot (not in AG list)", tag="GATEWAY")
-        return "copilot"
+        return "copilot", model
+
+
+def get_backend_chain_for_model(model: str) -> List[str]:
+    """
+    获取模型的后端优先级链
+
+    如果模型配置了特定路由规则，返回配置的后端链；
+    否则返回默认的单后端列表。
+
+    Args:
+        model: 模型名称
+
+    Returns:
+        后端名称列表，按优先级排序
+    """
+    routing_rule = get_model_routing_rule(model)
+    if routing_rule and routing_rule.enabled and routing_rule.backends:
+        # 过滤掉未启用的后端
+        enabled_backends = []
+        for backend in routing_rule.backends:
+            backend_config = BACKENDS.get(backend, {})
+            if backend_config.get("enabled", True):
+                enabled_backends.append(backend)
+        if enabled_backends:
+            return enabled_backends
+
+    # 没有特定规则，返回默认后端
+    default_backend = get_backend_for_model(model)
+    return [default_backend] if default_backend else []
+
+
+def sanitize_model_params(body: Dict[str, Any], target_model: str) -> Dict[str, Any]:
+    """
+    ✅ [FIX 2026-01-22] 清理目标模型不支持的参数
+    
+    跨模型降级时，不同模型可能有不同的参数要求。
+    此函数清理目标模型不支持的参数，避免请求失败。
+    
+    Args:
+        body: 请求体字典
+        target_model: 目标模型名称
+    
+    Returns:
+        清理后的请求体
+    """
+    sanitized = body.copy()
+    
+    # Gemini 模型可能不支持某些 Claude 特有的参数
+    if "gemini" in target_model.lower():
+        # 移除 thinking 相关参数（Gemini 不支持）
+        if "thinking" in sanitized:
+            log.debug(f"[FALLBACK] 移除 thinking 参数（Gemini 不支持）", tag="GATEWAY")
+            del sanitized["thinking"]
+        
+        # 调整 max_tokens 范围（Gemini 的限制通常是 8192）
+        if "max_tokens" in sanitized:
+            max_tokens = sanitized["max_tokens"]
+            if isinstance(max_tokens, int) and max_tokens > 8192:
+                log.debug(f"[FALLBACK] 调整 max_tokens: {max_tokens} -> 8192 (Gemini 限制)", tag="GATEWAY")
+                sanitized["max_tokens"] = 8192
+        
+        # 清理 messages 中的 thinking 块（如果存在）
+        if "messages" in sanitized and isinstance(sanitized["messages"], list):
+            for msg in sanitized["messages"]:
+                if isinstance(msg, dict) and "content" in msg:
+                    content = msg["content"]
+                    if isinstance(content, list):
+                        # 移除 thinking 类型的 content 块
+                        msg["content"] = [
+                            block for block in content
+                            if not (isinstance(block, dict) and block.get("type") == "thinking")
+                        ]
+    
+    # Claude 模型降级到其他 Claude 模型时，通常不需要清理
+    # 但可以在这里添加其他模型的特殊处理
+    
+    return sanitized
+
+
+def get_fallback_backend(
+    model: str,
+    current_backend: str,
+    status_code: int = None,
+    error_type: str = None
+) -> Optional[str]:
+    """
+    获取降级后端（向后兼容版本，只返回后端名称）
+
+    当当前后端请求失败时，根据配置的降级条件返回下一个后端。
+
+    Args:
+        model: 模型名称
+        current_backend: 当前失败的后端
+        status_code: HTTP 状态码（如 429, 503）
+        error_type: 错误类型（timeout, connection_error, unavailable）
+
+    Returns:
+        下一个后端名称，如果没有可用的降级后端则返回 None
+    """
+    result = get_fallback_backend_and_model(model, current_backend, status_code, error_type, visited_backends=None)
+    return result[0] if result else None
+
+
+def get_fallback_backend_and_model(
+    model: str,
+    current_backend: str,
+    status_code: int = None,
+    error_type: str = None,
+    visited_backends: Optional[set] = None  # ✅ [FIX 2026-01-22] 防止循环降级
+) -> Optional[Tuple[str, str]]:
+    """
+    获取降级后端和目标模型
+
+    当当前后端请求失败时，根据配置的降级条件返回下一个后端和目标模型。
+    支持模型级别的降级，如 claude-sonnet-4.5 -> gemini-3-pro。
+
+    Args:
+        model: 原始请求的模型名称
+        current_backend: 当前失败的后端
+        status_code: HTTP 状态码（如 429, 503）
+        error_type: 错误类型（timeout, connection_error, unavailable）
+        visited_backends: 已访问的后端集合（用于防止循环降级）
+
+    Returns:
+        Tuple[str, str]: (下一个后端名称, 目标模型名称)
+        如果没有可用的降级后端则返回 None
+    """
+    # ✅ [FIX 2026-01-22] 初始化已访问后端集合
+    if visited_backends is None:
+        visited_backends = set()
+    
+    # ✅ [FIX 2026-01-22] 防止循环降级
+    if current_backend in visited_backends:
+        log.error(
+            f"[FALLBACK] 检测到循环降级: {current_backend} 已在访问链中 "
+            f"(visited: {visited_backends})",
+            tag="GATEWAY"
+        )
+        return None
+    
+    visited_backends.add(current_backend)
+    
+    routing_rule = get_model_routing_rule(model)
+    if not routing_rule or not routing_rule.enabled:
+        # ✅ [FIX 2026-01-22] 如果没有路由规则，记录警告但不强制降级
+        # 这可能是正常的（某些模型可能没有配置降级规则）
+        log.debug(
+            f"No routing rule or rule disabled for {model}, skipping fallback",
+            tag="GATEWAY"
+        )
+        return None
+
+    # 检查是否应该降级
+    if not routing_rule.should_fallback(status_code, error_type):
+        # ✅ [FIX 2026-01-22] 记录详细的跳过原因，便于调试
+        log.debug(
+            f"No fallback for {model}: status={status_code}, error={error_type} not in fallback_on "
+            f"(fallback_on={routing_rule.fallback_on})",
+            tag="GATEWAY"
+        )
+        return None
+
+    # 获取下一个后端条目
+    next_entry = routing_rule.get_next_backend_entry(current_backend)
+    if next_entry:
+        # ✅ [FIX 2026-01-22] 检查下一个后端是否已在访问链中
+        if next_entry.backend in visited_backends:
+            log.error(
+                f"[FALLBACK] 下一个后端 {next_entry.backend} 已在访问链中，避免循环",
+                tag="GATEWAY"
+            )
+            return None
+        
+        # 检查下一个后端是否启用
+        backend_config = BACKENDS.get(next_entry.backend, {})
+        if backend_config.get("enabled", True):
+            log.route(
+                f"Fallback: {model} {current_backend} -> {next_entry.backend}({next_entry.model}) "
+                f"(status={status_code}, error={error_type})",
+                tag="GATEWAY"
+            )
+            return next_entry.backend, next_entry.model
+        else:
+            # ✅ [FIX 2026-01-22] 递归查找下一个启用的后端，传递 visited_backends
+            return get_fallback_backend_and_model(
+                model, next_entry.backend, status_code, error_type, visited_backends
+            )
+
+    return None
+
+
+def should_fallback_to_next(
+    model: str,
+    current_backend: str,
+    status_code: int = None,
+    error_type: str = None
+) -> bool:
+    """
+    判断是否应该降级到下一个后端
+
+    Args:
+        model: 模型名称
+        current_backend: 当前后端
+        status_code: HTTP 状态码
+        error_type: 错误类型
+
+    Returns:
+        是否应该降级
+    """
+    routing_rule = get_model_routing_rule(model)
+    if not routing_rule or not routing_rule.enabled:
+        return False
+
+    # 检查当前后端是否在路由链中
+    if current_backend not in routing_rule.backends:
+        return False
+
+    # 检查是否有下一个后端
+    idx = routing_rule.backends.index(current_backend)
+    if idx + 1 >= len(routing_rule.backends):
+        return False
+
+    # 检查降级条件
+    return routing_rule.should_fallback(status_code, error_type)
 
 
 def calculate_retry_delay(attempt: int, config: Dict = None) -> float:
@@ -2320,6 +2998,515 @@ async def check_backend_health(backend_key: str) -> bool:
     except Exception as e:
         log.warning(f"Backend {backend_key} health check failed: {e}")
         return False
+
+
+def _convert_openai_to_anthropic_body(openai_body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    将 OpenAI 格式的请求体转换为 Anthropic 格式
+
+    OpenAI 格式:
+    {
+        "model": "claude-sonnet-4.5",
+        "messages": [
+            {"role": "system", "content": "..."},
+            {"role": "user", "content": "..."},
+            {"role": "assistant", "content": "..."}
+        ],
+        "stream": true,
+        "max_tokens": 4096,
+        "temperature": 0.7
+    }
+
+    Anthropic 格式:
+    {
+        "model": "claude-sonnet-4-5-20250514",
+        "system": "...",
+        "messages": [
+            {"role": "user", "content": "..."},
+            {"role": "assistant", "content": "..."}
+        ],
+        "stream": true,
+        "max_tokens": 4096,
+        "temperature": 0.7
+    }
+
+    [FIX 2026-01-19] 为 Kiro Gateway 添加 OpenAI -> Anthropic 格式转换
+    """
+    messages = openai_body.get("messages", [])
+    model = openai_body.get("model", "claude-sonnet-4.5")
+    stream = openai_body.get("stream", False)
+
+    # 提取 system 消息
+    system_content = ""
+    anthropic_messages = []
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        if role == "system":
+            # 合并多个 system 消息
+            if system_content:
+                system_content += "\n\n"
+            if isinstance(content, str):
+                system_content += content
+            elif isinstance(content, list):
+                # 处理多部分内容
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        system_content += part.get("text", "")
+                    elif isinstance(part, str):
+                        system_content += part
+        elif role in ("user", "assistant"):
+            # 转换 content 格式
+            anthropic_content = _convert_openai_content_to_anthropic(content)
+
+            # 处理 tool_calls (assistant 消息)
+            tool_calls = msg.get("tool_calls", [])
+            if tool_calls and role == "assistant":
+                # 添加 tool_use 块
+                if isinstance(anthropic_content, str):
+                    anthropic_content = [{"type": "text", "text": anthropic_content}] if anthropic_content else []
+                elif not isinstance(anthropic_content, list):
+                    anthropic_content = []
+
+                for tc in tool_calls:
+                    tool_use_block = {
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": tc.get("function", {}).get("name", ""),
+                        "input": {}
+                    }
+                    # 解析 arguments
+                    args_str = tc.get("function", {}).get("arguments", "{}")
+                    try:
+                        tool_use_block["input"] = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    except json.JSONDecodeError:
+                        tool_use_block["input"] = {"raw": args_str}
+                    anthropic_content.append(tool_use_block)
+
+            anthropic_messages.append({
+                "role": role,
+                "content": anthropic_content
+            })
+        elif role == "tool":
+            # 转换 tool 消息为 user 消息 + tool_result
+            tool_call_id = msg.get("tool_call_id", "")
+            tool_result_content = content if isinstance(content, str) else json.dumps(content)
+
+            anthropic_messages.append({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_call_id,
+                    "content": tool_result_content
+                }]
+            })
+
+    # 模型名称映射 (确保使用 Kiro Gateway 支持的格式)
+    model_mapping = {
+        "claude-sonnet-4.5": "claude-sonnet-4-5-20250514",
+        "claude-sonnet-4-5": "claude-sonnet-4-5-20250514",
+        "claude-opus-4.5": "claude-opus-4-5-20250514",
+        "claude-opus-4-5": "claude-opus-4-5-20250514",
+        "claude-haiku-4.5": "claude-haiku-4-5-20250514",
+        "claude-haiku-4-5": "claude-haiku-4-5-20250514",
+        "claude-sonnet-4": "claude-sonnet-4-20250514",
+    }
+
+    # 处理 thinking 变体
+    is_thinking = "-thinking" in model.lower()
+    base_model = model.lower().replace("-thinking", "")
+    mapped_model = model_mapping.get(base_model, model)
+    if is_thinking:
+        mapped_model = mapped_model  # Kiro Gateway 可能需要特殊处理 thinking
+
+    # 构建 Anthropic 格式请求体
+    anthropic_body = {
+        "model": mapped_model,
+        "messages": anthropic_messages,
+        "stream": stream,
+        "max_tokens": openai_body.get("max_tokens", 8192),
+    }
+
+    # 添加 system 消息
+    if system_content:
+        anthropic_body["system"] = system_content
+
+    # 复制其他参数
+    for key in ("temperature", "top_p", "stop", "metadata"):
+        if key in openai_body:
+            anthropic_body[key] = openai_body[key]
+
+    # 转换 tools
+    if "tools" in openai_body:
+        anthropic_body["tools"] = _convert_openai_tools_to_anthropic(openai_body["tools"])
+
+    return anthropic_body
+
+
+def _convert_openai_content_to_anthropic(content: Any) -> Any:
+    """
+    将 OpenAI 格式的 content 转换为 Anthropic 格式
+
+    OpenAI 格式可能是:
+    - 字符串: "Hello"
+    - 数组: [{"type": "text", "text": "..."}, {"type": "image_url", ...}]
+
+    Anthropic 格式:
+    - 字符串: "Hello"
+    - 数组: [{"type": "text", "text": "..."}, {"type": "image", ...}]
+    """
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        anthropic_parts = []
+        for part in content:
+            if isinstance(part, dict):
+                part_type = part.get("type", "")
+                if part_type == "text":
+                    anthropic_parts.append({"type": "text", "text": part.get("text", "")})
+                elif part_type == "image_url":
+                    # 转换图片格式
+                    image_url = part.get("image_url", {}).get("url", "")
+                    if image_url.startswith("data:"):
+                        # 解析 base64 图片
+                        import re
+                        match = re.match(r"data:([^;]+);base64,(.+)", image_url)
+                        if match:
+                            anthropic_parts.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": match.group(1),
+                                    "data": match.group(2)
+                                }
+                            })
+                    else:
+                        # URL 图片
+                        anthropic_parts.append({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": image_url
+                            }
+                        })
+            elif isinstance(part, str):
+                anthropic_parts.append({"type": "text", "text": part})
+        return anthropic_parts if anthropic_parts else ""
+
+    return content
+
+
+def _convert_openai_tools_to_anthropic(openai_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    将 OpenAI 格式的 tools 转换为 Anthropic 格式
+
+    OpenAI 格式:
+    [{"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}]
+
+    Anthropic 格式:
+    [{"name": "...", "description": "...", "input_schema": {...}}]
+    """
+    anthropic_tools = []
+    for tool in openai_tools:
+        if tool.get("type") == "function":
+            func = tool.get("function", {})
+            anthropic_tools.append({
+                "name": func.get("name", ""),
+                "description": func.get("description", ""),
+                "input_schema": func.get("parameters", {"type": "object", "properties": {}})
+            })
+    return anthropic_tools
+
+
+def _convert_anthropic_to_openai_response(anthropic_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    将 Anthropic 格式的响应转换为 OpenAI 格式
+
+    Anthropic 格式:
+    {
+        "id": "msg_...",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "..."}],
+        "model": "claude-sonnet-4-5-20250514",
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 100, "output_tokens": 50}
+    }
+
+    OpenAI 格式:
+    {
+        "id": "chatcmpl-...",
+        "object": "chat.completion",
+        "created": 1234567890,
+        "model": "claude-sonnet-4.5",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "..."},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+    }
+
+    [FIX 2026-01-19] 为 Kiro Gateway 添加 Anthropic -> OpenAI 响应转换
+    """
+    import time
+
+    # 提取内容
+    content_blocks = anthropic_response.get("content", [])
+    text_content = ""
+    tool_calls = []
+
+    for block in content_blocks:
+        if isinstance(block, dict):
+            block_type = block.get("type", "")
+            if block_type == "text":
+                text_content += block.get("text", "")
+            elif block_type == "tool_use":
+                # 转换 tool_use 为 OpenAI 的 tool_calls
+                tool_calls.append({
+                    "id": block.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": json.dumps(block.get("input", {}))
+                    }
+                })
+        elif isinstance(block, str):
+            text_content += block
+
+    # 构建 message
+    message = {
+        "role": "assistant",
+        "content": text_content if text_content else None
+    }
+
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    # 转换 stop_reason
+    stop_reason_mapping = {
+        "end_turn": "stop",
+        "stop_sequence": "stop",
+        "max_tokens": "length",
+        "tool_use": "tool_calls"
+    }
+    finish_reason = stop_reason_mapping.get(
+        anthropic_response.get("stop_reason", "end_turn"),
+        "stop"
+    )
+
+    # 转换 usage
+    anthropic_usage = anthropic_response.get("usage", {})
+    openai_usage = {
+        "prompt_tokens": anthropic_usage.get("input_tokens", 0),
+        "completion_tokens": anthropic_usage.get("output_tokens", 0),
+        "total_tokens": anthropic_usage.get("input_tokens", 0) + anthropic_usage.get("output_tokens", 0)
+    }
+
+    # 构建 OpenAI 响应
+    openai_response = {
+        "id": f"chatcmpl-{anthropic_response.get('id', 'unknown')}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": anthropic_response.get("model", "claude-sonnet-4.5"),
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason
+        }],
+        "usage": openai_usage
+    }
+
+    return openai_response
+
+
+async def _convert_anthropic_stream_to_openai(byte_iterator) -> AsyncIterator[str]:
+    """
+    将 Anthropic SSE 流式响应转换为 OpenAI SSE 格式
+
+    Anthropic SSE 事件类型:
+    - message_start: 消息开始，包含 message 对象
+    - content_block_start: 内容块开始
+    - content_block_delta: 内容块增量
+    - content_block_stop: 内容块结束
+    - message_delta: 消息增量（包含 stop_reason）
+    - message_stop: 消息结束
+
+    OpenAI SSE 格式:
+    data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"..."}}]}
+
+    [FIX 2026-01-19] 为 Kiro Gateway 添加流式响应转换
+    """
+    import time
+
+    buffer = ""
+    message_id = f"chatcmpl-kiro-{int(time.time())}"
+    model = "claude-sonnet-4.5"
+    current_tool_call_index = -1
+    tool_call_id = ""
+    tool_call_name = ""
+
+    async for chunk in byte_iterator:
+        if not chunk:
+            continue
+
+        buffer += chunk.decode("utf-8", errors="ignore")
+
+        # 解析 SSE 事件
+        while "\n\n" in buffer:
+            event_str, buffer = buffer.split("\n\n", 1)
+            lines = event_str.strip().split("\n")
+
+            event_type = None
+            event_data = None
+
+            for line in lines:
+                if line.startswith("event:"):
+                    event_type = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_str = line[5:].strip()
+                    if data_str:
+                        try:
+                            event_data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+            if not event_data:
+                continue
+
+            # 根据事件类型转换
+            if event_type == "message_start":
+                # 提取消息信息
+                message = event_data.get("message", {})
+                message_id = f"chatcmpl-{message.get('id', 'unknown')}"
+                model = message.get("model", "claude-sonnet-4.5")
+
+                # 发送初始 chunk
+                openai_chunk = {
+                    "id": message_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": ""},
+                        "finish_reason": None
+                    }]
+                }
+                yield f"data: {json.dumps(openai_chunk)}\n\n"
+
+            elif event_type == "content_block_start":
+                content_block = event_data.get("content_block", {})
+                block_type = content_block.get("type", "")
+
+                if block_type == "tool_use":
+                    # 工具调用开始
+                    current_tool_call_index += 1
+                    tool_call_id = content_block.get("id", "")
+                    tool_call_name = content_block.get("name", "")
+
+                    openai_chunk = {
+                        "id": message_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [{
+                                    "index": current_tool_call_index,
+                                    "id": tool_call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_call_name,
+                                        "arguments": ""
+                                    }
+                                }]
+                            },
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(openai_chunk)}\n\n"
+
+            elif event_type == "content_block_delta":
+                delta = event_data.get("delta", {})
+                delta_type = delta.get("type", "")
+
+                if delta_type == "text_delta":
+                    # 文本增量
+                    text = delta.get("text", "")
+                    if text:
+                        openai_chunk = {
+                            "id": message_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": text},
+                                "finish_reason": None
+                            }]
+                        }
+                        yield f"data: {json.dumps(openai_chunk)}\n\n"
+
+                elif delta_type == "input_json_delta":
+                    # 工具调用参数增量
+                    partial_json = delta.get("partial_json", "")
+                    if partial_json:
+                        openai_chunk = {
+                            "id": message_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {
+                                    "tool_calls": [{
+                                        "index": current_tool_call_index,
+                                        "function": {
+                                            "arguments": partial_json
+                                        }
+                                    }]
+                                },
+                                "finish_reason": None
+                            }]
+                        }
+                        yield f"data: {json.dumps(openai_chunk)}\n\n"
+
+            elif event_type == "message_delta":
+                # 消息增量（包含 stop_reason）
+                delta = event_data.get("delta", {})
+                stop_reason = delta.get("stop_reason")
+
+                if stop_reason:
+                    # 转换 stop_reason
+                    stop_reason_mapping = {
+                        "end_turn": "stop",
+                        "stop_sequence": "stop",
+                        "max_tokens": "length",
+                        "tool_use": "tool_calls"
+                    }
+                    finish_reason = stop_reason_mapping.get(stop_reason, "stop")
+
+                    openai_chunk = {
+                        "id": message_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": finish_reason
+                        }]
+                    }
+                    yield f"data: {json.dumps(openai_chunk)}\n\n"
+
+            elif event_type == "message_stop":
+                # 消息结束
+                yield "data: [DONE]\n\n"
 
 
 async def proxy_request_to_backend(
@@ -2399,7 +3586,55 @@ async def proxy_request_to_backend(
             log.route(f"Model mapped: {original_model} -> {mapped_model}", tag="COPILOT")
             body = {**body, "model": mapped_model}
 
-    url = f"{backend['base_url']}{endpoint}"
+    # ==================== Kiro Gateway: OpenAI -> Anthropic 格式转换 ====================
+    # [FIX 2026-01-19] Kiro Gateway 使用 Anthropic 格式的 /messages 端点
+    if backend_key == "kiro-gateway" and endpoint == "/chat/completions" and body and isinstance(body, dict):
+        # 转换端点
+        endpoint = "/messages"
+        model_name = body.get("model", "unknown")
+        log.info(f"[GATEWAY] 🎯 KIRO GATEWAY: Converting endpoint /chat/completions -> /messages (model={model_name})", tag="GATEWAY")
+
+        # 转换请求体: OpenAI -> Anthropic 格式
+        body = _convert_openai_to_anthropic_body(body)
+        log.info(f"[GATEWAY] 🎯 KIRO GATEWAY: Converted request body to Anthropic format (model={model_name})", tag="GATEWAY")
+
+    # ==================== AnyRouter: 格式转换和端点处理 ====================
+    # [FIX 2026-01-21] AnyRouter 使用 Anthropic 格式的 /messages 端点
+    # 需要处理两种情况：1) OpenAI 格式 /chat/completions  2) Anthropic 格式 /messages
+    anyrouter_base_url = None
+    anyrouter_api_key = None
+    if backend_key == "anyrouter":
+        # 获取 AnyRouter 的端点和 API Key
+        from .gateway.config import get_anyrouter_endpoint
+        anyrouter_base_url, anyrouter_api_key = get_anyrouter_endpoint()
+
+        if not anyrouter_base_url or not anyrouter_api_key:
+            log.warning("AnyRouter: No endpoints or API keys configured", tag="GATEWAY")
+            return False, "AnyRouter not configured"
+
+        # 如果是 OpenAI 格式的 /chat/completions，需要转换为 Anthropic 格式
+        if endpoint == "/chat/completions" and body and isinstance(body, dict):
+            # 转换端点
+            endpoint = "/v1/messages"
+            log.debug(f"AnyRouter: Converting endpoint /chat/completions -> /v1/messages", tag="GATEWAY")
+
+            # 转换请求体: OpenAI -> Anthropic 格式
+            body = _convert_openai_to_anthropic_body(body)
+            log.debug(f"AnyRouter: Converted request body to Anthropic format", tag="GATEWAY")
+        # 如果已经是 Anthropic 格式的 /messages 端点，确保路径正确
+        elif endpoint == "/messages" or endpoint == "/v1/messages":
+            # 确保端点格式正确
+            if not endpoint.startswith("/v1"):
+                endpoint = "/v1/messages"
+            log.debug(f"AnyRouter: Using Anthropic format endpoint {endpoint}", tag="GATEWAY")
+
+        log.debug(f"AnyRouter: Using base URL {anyrouter_base_url}", tag="GATEWAY")
+
+    # 构建 URL（AnyRouter 使用动态端点）
+    if backend_key == "anyrouter" and anyrouter_base_url:
+        url = f"{anyrouter_base_url}{endpoint}"
+    else:
+        url = f"{backend['base_url']}{endpoint}"
 
     # 根据请求类型选择超时时间
     if stream:
@@ -2415,6 +3650,16 @@ async def proxy_request_to_backend(
         "Content-Type": "application/json",
         "Authorization": headers.get("authorization", "Bearer dummy"),
     }
+
+    # AnyRouter: 使用自己的 API Key（Anthropic 格式）
+    if backend_key == "anyrouter" and anyrouter_api_key:
+        request_headers["x-api-key"] = anyrouter_api_key
+        request_headers["anthropic-version"] = "2023-06-01"
+        # 移除 OpenAI 格式的 Authorization
+        if "Authorization" in request_headers:
+            del request_headers["Authorization"]
+        log.debug(f"AnyRouter: Using API key {anyrouter_api_key[:10]}...", tag="GATEWAY")
+
     # Preserve upstream client identity (important for backend routing/features)
     user_agent = headers.get("user-agent") or headers.get("User-Agent")
     if user_agent:
@@ -2435,6 +3680,9 @@ async def proxy_request_to_backend(
         "x-signature-vector",
         "x-disable-thinking-signature",
         "x-request-id",
+        # [FIX 2026-01-20] SCID 架构 - 转发会话ID header
+        "x-ag-conversation-id",
+        "x-conversation-id",
     ):
         v = headers.get(h) or headers.get(h.lower()) or headers.get(h.upper())
         if v:
@@ -2453,7 +3701,7 @@ async def proxy_request_to_backend(
             if stream:
                 # 流式请求（带超时）
                 return await proxy_streaming_request_with_timeout(
-                    url, method, request_headers, body, timeout, backend_key
+                    url, method, request_headers, body, timeout, backend_key, endpoint
                 )
             else:
                 # 非流式请求
@@ -2471,14 +3719,33 @@ async def proxy_request_to_backend(
                         error_text = response.text
                         log.warning(f"Backend {backend_key} returned error {response.status_code}: {error_text[:200]}")
 
+                        # [FIX 2026-01-21] Copilot 402 熔断：余额不足时开启熔断器
+                        if backend_key == "copilot" and response.status_code == 402:
+                            # 检测 quota_exceeded 错误
+                            if "quota" in error_text.lower() or "no quota" in error_text.lower():
+                                open_copilot_circuit_breaker(f"402 余额不足: {error_text[:100]}")
+
                         # 检查是否应该重试
                         if should_retry(response.status_code, attempt, max_retries):
                             last_error = f"Backend error: {response.status_code}"
                             continue
 
-                        return False, f"Backend error: {response.status_code}"
+                        return False, f"Backend {backend_key} returned error {response.status_code}: {error_text}"
 
-                    return True, response.json()
+                    # 获取响应
+                    response_data = response.json()
+
+                    # [FIX 2026-01-22] Kiro Gateway: 只有 /chat/completions 端点需要转换，/messages 端点直接透传
+                    if backend_key == "kiro-gateway" and endpoint == "/chat/completions":
+                        response_data = _convert_anthropic_to_openai_response(response_data)
+                        log.debug(f"Kiro Gateway: Converted response to OpenAI format", tag="GATEWAY")
+
+                    # [FIX 2026-01-22] AnyRouter: 只有 /chat/completions 端点需要转换，/messages 端点直接透传
+                    if backend_key == "anyrouter" and endpoint == "/chat/completions":
+                        response_data = _convert_anthropic_to_openai_response(response_data)
+                        log.debug(f"AnyRouter: Converted response to OpenAI format", tag="GATEWAY")
+
+                    return True, response_data
 
         except httpx.TimeoutException:
             log.warning(f"Backend {backend_key} timeout (attempt {attempt + 1}/{max_retries + 1})")
@@ -2498,6 +3765,13 @@ async def proxy_request_to_backend(
 
     # 所有重试都失败
     log.error(f"Backend {backend_key} failed after {max_retries + 1} attempts. Last error: {last_error}")
+
+    # [FIX 2026-01-19] AnyRouter: 失败时轮换端点，下次请求使用新端点
+    if backend_key == "anyrouter":
+        from .gateway.config import rotate_anyrouter_endpoint
+        rotate_anyrouter_endpoint(rotate_url=True, rotate_key=False)
+        log.info("AnyRouter: Rotated to next endpoint for future requests", tag="GATEWAY")
+
     return False, last_error or "Unknown error"
 
 
@@ -2508,6 +3782,7 @@ async def proxy_streaming_request_with_timeout(
     body: Any,
     timeout: float,
     backend_key: str = "unknown",
+    endpoint: str = "",
 ) -> Tuple[bool, Any]:
     """
     处理流式代理请求（带超时和错误处理）
@@ -2553,22 +3828,57 @@ async def proxy_streaming_request_with_timeout(
 
                     yielded_any = False
                     saw_done = False
-                    async for chunk in response.aiter_bytes():
-                        if chunk:
-                            yielded_any = True
-                            if b"[DONE]" in chunk:
-                                saw_done = True
-                            yield chunk.decode("utf-8", errors="ignore")
+
+                    # [FIX 2026-01-22] Kiro Gateway: 只有 /chat/completions 端点需要转换，/messages 端点直接透传
+                    if backend_key == "kiro-gateway" and endpoint == "/chat/completions":
+                        # OpenAI 格式需要转换
+                        async for converted_chunk in _convert_anthropic_stream_to_openai(response.aiter_bytes()):
+                            if converted_chunk:
+                                yielded_any = True
+                                if "[DONE]" in converted_chunk:
+                                    saw_done = True
+                                yield converted_chunk
+                    # [FIX 2026-01-22] AnyRouter: 只有 /chat/completions 端点需要转换，/messages 端点直接透传
+                    elif backend_key == "anyrouter" and endpoint == "/chat/completions":
+                        # OpenAI 格式需要转换
+                        async for converted_chunk in _convert_anthropic_stream_to_openai(response.aiter_bytes()):
+                            if converted_chunk:
+                                yielded_any = True
+                                if "[DONE]" in converted_chunk:
+                                    saw_done = True
+                                yield converted_chunk
+                    else:
+                        # Anthropic 格式直接透传
+                        async for chunk in response.aiter_bytes():
+                            if chunk:
+                                yielded_any = True
+                                if b"[DONE]" in chunk:
+                                    saw_done = True
+                                yield chunk.decode("utf-8", errors="ignore")
 
                     log.success(f"Streaming completed", tag=backend_key.upper())
 
             except httpx.ReadTimeout:
                 log.warning(f"Read timeout from {backend_key} after {timeout}s")
-                error_msg = json.dumps({'error': 'Read timeout', 'message': f'No response within {timeout}s'})
+                error_msg = json.dumps({
+                    'error': {
+                        'type': 'network',
+                        'reason': 'timeout',
+                        'message': 'Request timed out',
+                        'retryable': True
+                    }
+                })
                 yield f"data: {error_msg}\n\n"
             except httpx.ConnectTimeout:
                 log.warning(f"Connect timeout to {backend_key}")
-                error_msg = json.dumps({'error': 'Connect timeout'})
+                error_msg = json.dumps({
+                    'error': {
+                        'type': 'network',
+                        'reason': 'timeout',
+                        'message': 'Request timed out',
+                        'retryable': True
+                    }
+                })
                 yield f"data: {error_msg}\n\n"
             except httpx.RemoteProtocolError as e:
                 # Some upstreams (notably enterprise proxies) may close a chunked response
@@ -2600,7 +3910,7 @@ async def proxy_streaming_request_with_timeout(
                 yield f"data: {error_msg}\n\n"
             finally:
                 try:
-                    await client.aclose()
+                    await safe_close_client(client)
                 except Exception:
                     # Avoid noisy event-loop "connection_lost" traces on Windows Proactor when the
                     # peer has already reset the connection.
@@ -2649,7 +3959,7 @@ async def proxy_streaming_request(
                 return
             finally:
                 try:
-                    await client.aclose()
+                    await safe_close_client(client)
                 except Exception:
                     pass
 
@@ -2672,33 +3982,205 @@ async def route_request_with_fallback(
     带故障转移的请求路由
 
     优先使用指定后端，失败时自动切换到备用后端
-    """
-    # 确定后端顺序
-    specified_backend = get_backend_for_model(model) if model else None
-    sorted_backends = get_sorted_backends()
 
-    if specified_backend:
-        # 将指定后端移到最前面
-        sorted_backends = [(k, v) for k, v in sorted_backends if k == specified_backend] + \
-                         [(k, v) for k, v in sorted_backends if k != specified_backend]
+    路由策略：
+    1. Antigravity (priority=1) - 优先使用，支持 Claude 4.5 (sonnet/opus) 和 Gemini 2.5/3
+    2. Kiro Gateway (priority=2) - Claude 模型的降级后端（包括 haiku）
+    3. AnyRouter (priority=3) - 公益站第三方 API（支持所有 Claude）
+    4. Copilot (priority=4) - 最终兜底，支持所有模型
+
+    [FIX 2026-01-21] Opus 模型特殊处理：
+    - 所有后端失败后，才进行跨模型降级到 Gemini
+    - 降级顺序: AG (所有凭证) -> Kiro -> AnyRouter -> Copilot -> 跨模型
+
+    Haiku 模型特殊处理：
+    - Antigravity 不支持 Haiku，会被跳过
+    - 直接走 Kiro -> AnyRouter -> Copilot 链路
+    - 全部失败后降级到 gemini-3-flash
+    """
+    from src.fallback_manager import is_opus_model, is_haiku_model, get_cross_pool_fallback, HAIKU_FINAL_FALLBACK
+
+    # ✅ [FIX 2026-01-22] 优先使用 model_routing 配置的降级链
+    log.debug(f"[GATEWAY] route_request_with_fallback called: model={model}, endpoint={endpoint}", tag="GATEWAY")
+    routing_rule = get_model_routing_rule(model) if model else None
+    
+    if routing_rule:
+        log.info(f"[GATEWAY] Found routing_rule for {model}: enabled={routing_rule.enabled}", tag="GATEWAY")
+    else:
+        log.debug(f"[GATEWAY] No routing_rule found for {model}, will use default priority", tag="GATEWAY")
+    
+    backend_chain = None
+    
+    if routing_rule and routing_rule.enabled and routing_rule.backend_chain:
+        # 使用配置的降级链
+        log.info(f"[GATEWAY] Found model_routing rule for {model}: enabled={routing_rule.enabled}, chain_length={len(routing_rule.backend_chain)}", tag="GATEWAY")
+        backend_chain = []
+        for entry in routing_rule.backend_chain:
+            backend_config = BACKENDS.get(entry.backend, {})
+            backend_enabled = backend_config.get("enabled", True)
+            target_model = entry.model
+            backend_key = entry.backend
+            
+            log.debug(f"[GATEWAY] Checking backend {backend_key}: enabled={backend_enabled}, target_model={target_model}", tag="GATEWAY")
+            
+            if not backend_enabled:
+                log.debug(f"[GATEWAY] Skipping {backend_key} (disabled)", tag="GATEWAY")
+                continue
+            
+            # 检查后端是否支持当前模型（或目标模型）
+            # 检查后端支持
+            if backend_key == "antigravity":
+                supported = is_antigravity_supported(target_model)
+                if not supported:
+                    log.debug(f"[GATEWAY] Skipping {backend_key} (model {target_model} not supported)", tag="GATEWAY")
+                    continue
+            elif backend_key == "kiro-gateway":
+                supported = is_kiro_gateway_supported(target_model)
+                if not supported:
+                    log.debug(f"[GATEWAY] Skipping {backend_key} (model {target_model} not supported)", tag="GATEWAY")
+                    continue
+                else:
+                    log.info(f"[GATEWAY] ✅ Kiro Gateway supports {target_model}, adding to chain", tag="GATEWAY")
+            elif backend_key == "anyrouter":
+                supported = is_anyrouter_supported(target_model)
+                if not supported:
+                    log.debug(f"[GATEWAY] Skipping {backend_key} (model {target_model} not supported)", tag="GATEWAY")
+                    continue
+            
+            backend_chain.append((backend_key, backend_config, target_model))
+            log.debug(f"[GATEWAY] Added {backend_key} to chain (target_model={target_model})", tag="GATEWAY")
+        
+        if backend_chain:
+            log.info(f"[GATEWAY] ✅ Using model_routing chain for {model}: {[b[0] for b in backend_chain]}", tag="GATEWAY")
+        else:
+            log.warning(f"[GATEWAY] ⚠️ model_routing chain for {model} is empty after filtering!", tag="GATEWAY")
+            log.warning(f"[GATEWAY] ⚠️ Will fallback to default priority order (antigravity priority=1, kiro-gateway priority=2)", tag="GATEWAY")
+    
+    # 如果没有配置的降级链，使用默认优先级顺序
+    if not backend_chain:
+        log.info(f"[GATEWAY] No model_routing chain for {model}, using default priority order", tag="GATEWAY")
+        specified_backend = get_backend_for_model(model) if model else None
+        sorted_backends = get_sorted_backends()
+
+        if specified_backend:
+            # 将指定后端移到最前面
+            sorted_backends = [(k, v) for k, v in sorted_backends if k == specified_backend] + \
+                             [(k, v) for k, v in sorted_backends if k != specified_backend]
+        
+        # 转换为统一格式 (backend_key, backend_config, target_model)
+        backend_chain = [(k, v, model) for k, v in sorted_backends]
 
     last_error = None
 
-    for backend_key, backend_config in sorted_backends:
-        log.info(f"Trying backend: {backend_config['name']} for {endpoint}")
+    for backend_key, backend_config, target_model in backend_chain:
+        # ✅ [FIX 2026-01-22] 如果使用 model_routing，更新请求体中的模型
+        request_body = body
+        if target_model and target_model != model and isinstance(body, dict):
+            request_body = body.copy()
+            request_body["model"] = target_model
+            log.debug(f"[GATEWAY] Using target model {target_model} instead of {model} for backend {backend_key}", tag="GATEWAY")
+
+        # [FIX 2026-01-21] Copilot 熔断器检查
+        # 如果 Copilot 已返回 402 余额不足，跳过该后端
+        if backend_key == "copilot" and is_copilot_circuit_open():
+            log.debug(f"Skipping Copilot (circuit breaker open - quota exceeded)", tag="GATEWAY")
+            continue
+
+        log.info(f"[GATEWAY] 🔄 Trying backend: {backend_config['name']} ({backend_key}) for {endpoint} (model={target_model or model})", tag="GATEWAY")
+        
+        # ✅ [DEBUG 2026-01-22] 特别标记 Kiro Gateway 请求
+        if backend_key == "kiro-gateway":
+            log.info(f"[GATEWAY] 🎯 KIRO GATEWAY REQUEST: model={target_model or model}, endpoint={endpoint}", tag="GATEWAY")
 
         success, result = await proxy_request_to_backend(
-            backend_key, endpoint, method, headers, body, stream
+            backend_key, endpoint, method, headers, request_body, stream
         )
 
+        # [FIX 2026-01-21] 记录后端健康状态
+        health_mgr = get_backend_health_manager()
+
         if success:
+            await health_mgr.record_success(backend_key)
             log.success(f"Request succeeded via {backend_config['name']}", tag="GATEWAY")
             return result
 
+        await health_mgr.record_failure(backend_key)
         last_error = result
-        log.warning(f"Backend {backend_config['name']} failed: {result}, trying next...")
+        
+        # ✅ [FIX 2026-01-22] 如果使用 model_routing，检查是否应该降级
+        if routing_rule and routing_rule.enabled:
+            # 从错误中提取状态码
+            status_code = None
+            error_type = None
+            if isinstance(result, str):
+                # 尝试从错误消息中提取状态码
+                import re
+                match = re.search(r'(\d{3})', result)
+                if match:
+                    status_code = int(match.group(1))
+                if "timeout" in result.lower():
+                    error_type = "timeout"
+                elif "connection" in result.lower():
+                    error_type = "connection_error"
+            
+            # 检查是否应该继续降级
+            if not routing_rule.should_fallback(status_code, error_type):
+                log.debug(f"[GATEWAY] Backend {backend_config['name']} failed but no fallback condition met (status={status_code}, error={error_type})", tag="GATEWAY")
+                # 继续尝试下一个后端（即使不符合降级条件）
+        
+        log.warning(f"Backend {backend_config['name']} failed: {result}, trying next...", tag="GATEWAY")
 
-    # 所有后端都失败
+    # ==================== 所有后端都失败，尝试跨模型降级 ====================
+    # [FIX 2026-01-21] Opus 和 Haiku 模型在所有后端失败后，降级到 Gemini
+    if model and (is_opus_model(model) or is_haiku_model(model)):
+        # 确定降级目标模型
+        if is_haiku_model(model):
+            fallback_model = HAIKU_FINAL_FALLBACK  # gemini-3-flash
+        else:
+            # Opus 降级到 Gemini 3 Pro
+            fallback_model = get_cross_pool_fallback(model, log_level="info")
+
+        if fallback_model:
+            log.warning(f"[GATEWAY FALLBACK] 所有后端失败，尝试跨模型降级: {model} -> {fallback_model}", tag="GATEWAY")
+
+            # ✅ [FIX 2026-01-22] 更新请求体中的模型并清理不兼容参数
+            fallback_body = body.copy() if isinstance(body, dict) else body
+            if isinstance(fallback_body, dict):
+                fallback_body["model"] = fallback_model
+                # 清理目标模型不支持的参数
+                fallback_body = sanitize_model_params(fallback_body, fallback_model)
+
+            # 使用 Antigravity 后端尝试降级模型
+            success, result = await proxy_request_to_backend(
+                "antigravity", endpoint, method, headers, fallback_body, stream
+            )
+
+            if success:
+                log.success(f"[GATEWAY FALLBACK] 跨模型降级成功: {model} -> {fallback_model}", tag="GATEWAY")
+                return result
+            else:
+                log.error(f"[GATEWAY FALLBACK] 跨模型降级也失败: {result}", tag="GATEWAY")
+                last_error = result
+        else:
+            # ✅ [FIX 2026-01-22] fallback_model 为 None 时，记录警告
+            log.warning(f"[GATEWAY FALLBACK] 无法获取降级模型，将尝试 Copilot", tag="GATEWAY")
+
+    # ✅ [FIX 2026-01-22] 所有后端和降级都失败，尝试 Copilot 作为最终兜底
+    if "copilot" in BACKENDS:
+        copilot_config = BACKENDS.get("copilot", {})
+        if copilot_config.get("enabled", True):
+            log.warning(f"[GATEWAY FALLBACK] 尝试 Copilot 作为最终兜底", tag="GATEWAY")
+            success, result = await proxy_request_to_backend(
+                "copilot", endpoint, method, headers, body, stream
+            )
+            if success:
+                log.success(f"[GATEWAY FALLBACK] Copilot 兜底成功", tag="GATEWAY")
+                return result
+            else:
+                log.error(f"[GATEWAY FALLBACK] Copilot 兜底也失败: {result}", tag="GATEWAY")
+                last_error = result
+
+    # 所有后端、降级和 Copilot 都失败
     raise HTTPException(
         status_code=503,
         detail=f"All backends failed. Last error: {last_error}"
@@ -2717,9 +4199,15 @@ async def list_models(request: Request):
 
     for backend_key, backend_config in get_sorted_backends():
         try:
+            # [FIX 2026-01-21] 使用辅助函数获取 base_url，支持 anyrouter 的 base_urls 格式
+            base_url = get_backend_base_url(backend_config)
+            if not base_url:
+                log.debug(f"Skipping {backend_key}: no base_url configured", tag="GATEWAY")
+                continue
+
             async with http_client.get_client(timeout=10.0) as client:
                 response = await client.get(
-                    f"{backend_config['base_url']}/models",
+                    f"{base_url}/models",
                     headers={"Authorization": "Bearer dummy"}
                 )
                 if response.status_code == 200:
@@ -2748,9 +4236,15 @@ async def list_models_for_augment(request: Request):
 
     for backend_key, backend_config in get_sorted_backends():
         try:
+            # [FIX 2026-01-21] 使用辅助函数获取 base_url，支持 anyrouter 的 base_urls 格式
+            base_url = get_backend_base_url(backend_config)
+            if not base_url:
+                log.debug(f"Skipping {backend_key}: no base_url configured", tag="GATEWAY")
+                continue
+
             async with http_client.get_client(timeout=10.0) as client:
                 response = await client.get(
-                    f"{backend_config['base_url']}/models",
+                    f"{base_url}/models",
                     headers={"Authorization": "Bearer dummy"}
                 )
                 if response.status_code == 200:
@@ -2899,18 +4393,382 @@ async def bugment_conversation_set_model(request: Request, token: str = Depends(
     return {"success": True}
 
 
+# ============================================================================
+# [FIX 2026-01-20] SCID 响应回写辅助函数
+# 用于在收到上游响应后，将 authoritative_history 和 last_signature 写回 SQLite
+# ============================================================================
+
+def _extract_signature_from_response(result: Dict) -> tuple:
+    """
+    从非流式响应中提取 assistant 消息和签名
+
+    Args:
+        result: OpenAI 格式的响应字典
+
+    Returns:
+        (assistant_message, signature) 元组
+    """
+    if not isinstance(result, dict):
+        return None, None
+
+    choices = result.get("choices", [])
+    if not choices:
+        return None, None
+
+    message = choices[0].get("message", {})
+    if not message or message.get("role") != "assistant":
+        return None, None
+
+    # 提取签名（从 content blocks 中查找 thinking block）
+    signature = None
+    content = message.get("content")
+
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"):
+                # 兼容两种字段名，统一存为 thoughtSignature
+                sig = block.get("thoughtSignature") or block.get("signature")
+                if sig and isinstance(sig, str) and len(sig) > 50:
+                    if sig != "skip_thought_signature_validator":
+                        signature = sig
+                        # 归一化：确保 block 中使用 thoughtSignature
+                        if "signature" in block and "thoughtSignature" not in block:
+                            block["thoughtSignature"] = sig
+                        break
+
+    return message, signature
+
+
+def _writeback_non_streaming_response(
+    result: Dict,
+    scid: str,
+    state_manager,
+    request_messages: list
+) -> None:
+    """
+    非流式响应回写：提取签名并更新权威历史
+
+    只在成功完成一次 assistant 输出后写回，失败/中断不污染 last_signature
+
+    Args:
+        result: 上游响应
+        scid: 会话 ID
+        state_manager: ConversationStateManager 实例
+        request_messages: 本次请求的消息列表
+    """
+    # 检查是否成功响应
+    if not isinstance(result, dict):
+        return
+
+    # 检查是否有错误
+    if "error" in result:
+        log.debug("[SCID] Skipping writeback due to error response", tag="GATEWAY")
+        return
+
+    # 提取 assistant 消息和签名
+    assistant_message, signature = _extract_signature_from_response(result)
+
+    if not assistant_message:
+        log.debug("[SCID] No assistant message found in response, skipping writeback", tag="GATEWAY")
+        return
+
+    # 提取本轮新增的用户消息（最后一条 user 消息）
+    new_user_messages = []
+    for msg in reversed(request_messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            new_user_messages.insert(0, msg)
+            break  # 只取最后一条用户消息
+
+    # 更新权威历史
+    state_manager.update_authoritative_history(
+        scid=scid,
+        new_messages=new_user_messages,
+        response_message=assistant_message,
+        signature=signature
+    )
+
+    # 同时缓存签名到 signature_cache（双写）
+    if signature:
+        try:
+            from src.signature_cache import cache_session_signature
+            cache_session_signature(scid, signature, "")
+        except Exception as cache_err:
+            log.debug(f"[SCID] Failed to cache signature: {cache_err}", tag="GATEWAY")
+
+    log.info(
+        f"[SCID] Non-streaming writeback complete: scid={scid[:20]}..., "
+        f"has_signature={signature is not None}",
+        tag="GATEWAY"
+    )
+
+
+async def _wrap_stream_with_writeback(
+    stream,
+    scid: str,
+    state_manager,
+    request_messages: list
+):
+    """
+    包装流式响应，在流完成时执行回写
+
+    收集流中的 assistant 消息内容，在流结束时一次性写回
+
+    Args:
+        stream: 原始流式响应
+        scid: 会话 ID
+        state_manager: ConversationStateManager 实例
+        request_messages: 本次请求的消息列表
+
+    Yields:
+        原始流数据
+    """
+    collected_content = []  # 改为收集content blocks（保留结构）
+    collected_tool_calls = []
+    last_signature = None
+    last_thinking_block = None  # 保存最后一个thinking块
+    stream_completed = False
+    has_error = False
+    has_text_content = False  # 标记是否有文本内容
+
+    try:
+        async for chunk in stream:
+            yield chunk
+
+            # 尝试解析 chunk 提取内容
+            try:
+                if isinstance(chunk, (str, bytes)):
+                    chunk_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+
+                    # 解析 SSE 格式
+                    for line in chunk_str.split("\n"):
+                        line = line.strip()
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            json_str = line[6:]
+                            try:
+                                data = json.loads(json_str)
+
+                                # 检查错误
+                                if "error" in data:
+                                    has_error = True
+                                    continue
+
+                                choices = data.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+
+                                    # 收集内容（保留block结构）
+                                    if "content" in delta:
+                                        content = delta["content"]
+                                        if isinstance(content, str):
+                                            # 字符串内容：创建text block
+                                            if content:  # 只收集非空内容
+                                                collected_content.append({
+                                                    "type": "text",
+                                                    "text": content
+                                                })
+                                                has_text_content = True
+                                        elif isinstance(content, list):
+                                            # 列表内容：直接收集blocks
+                                            for block in content:
+                                                if isinstance(block, dict):
+                                                    # 收集block
+                                                    collected_content.append(block)
+
+                                                    # 提取thinking块和签名
+                                                    if block.get("type") in ("thinking", "redacted_thinking"):
+                                                        sig = block.get("thoughtSignature") or block.get("signature")
+                                                        if sig and len(sig) > 50 and sig != "skip_thought_signature_validator":
+                                                            last_signature = sig
+                                                            # 保存完整的thinking块
+                                                            last_thinking_block = block.copy()
+                                                            # 归一化签名字段
+                                                            if "signature" in last_thinking_block and "thoughtSignature" not in last_thinking_block:
+                                                                last_thinking_block["thoughtSignature"] = sig
+
+                                    # 收集 tool_calls
+                                    if "tool_calls" in delta:
+                                        collected_tool_calls.extend(delta["tool_calls"])
+
+                                    # 检查是否完成
+                                    if choices[0].get("finish_reason"):
+                                        stream_completed = True
+
+                            except json.JSONDecodeError:
+                                pass
+            except Exception:
+                pass  # 解析失败不影响流传输
+
+    finally:
+        # 流结束后执行回写（只在成功完成时）
+        if stream_completed and not has_error and scid and state_manager:
+            try:
+                # 构建 assistant 消息（保留block结构）
+                assistant_message = {
+                    "role": "assistant"
+                }
+
+                # 设置content（优先使用block列表，兼容旧格式）
+                if collected_content:
+                    # 合并相邻的text blocks（优化）
+                    merged_content = []
+                    pending_text = []
+
+                    for block in collected_content:
+                        if block.get("type") == "text":
+                            pending_text.append(block.get("text", ""))
+                        else:
+                            # 非text block：先flush pending text
+                            if pending_text:
+                                merged_content.append({
+                                    "type": "text",
+                                    "text": "".join(pending_text)
+                                })
+                                pending_text = []
+                            # 添加非text block
+                            merged_content.append(block)
+
+                    # flush剩余的text
+                    if pending_text:
+                        merged_content.append({
+                            "type": "text",
+                            "text": "".join(pending_text)
+                        })
+
+                    # 设置content为block列表
+                    assistant_message["content"] = merged_content
+                else:
+                    # 空内容
+                    assistant_message["content"] = ""
+
+                if collected_tool_calls:
+                    assistant_message["tool_calls"] = collected_tool_calls
+
+                # 提取本轮新增的用户消息
+                new_user_messages = []
+                for msg in reversed(request_messages):
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        new_user_messages.insert(0, msg)
+                        break
+
+                # 更新权威历史
+                state_manager.update_authoritative_history(
+                    scid=scid,
+                    new_messages=new_user_messages,
+                    response_message=assistant_message,
+                    signature=last_signature
+                )
+
+                # 缓存签名
+                if last_signature:
+                    try:
+                        from src.signature_cache import cache_session_signature
+                        cache_session_signature(scid, last_signature, "")
+                    except Exception:
+                        pass
+
+                # 计算内容长度（用于日志）
+                content_len = 0
+                if isinstance(assistant_message.get("content"), list):
+                    for block in assistant_message["content"]:
+                        if block.get("type") == "text":
+                            content_len += len(block.get("text", ""))
+                        elif block.get("type") in ("thinking", "redacted_thinking"):
+                            content_len += len(block.get("thinking", ""))
+                elif isinstance(assistant_message.get("content"), str):
+                    content_len = len(assistant_message["content"])
+
+                log.info(
+                    f"[SCID] Streaming writeback complete: scid={scid[:20]}..., "
+                    f"content_len={content_len}, "
+                    f"content_blocks={len(merged_content) if collected_content else 0}, "
+                    f"has_thinking_block={last_thinking_block is not None}, "
+                    f"has_signature={last_signature is not None}",
+                    tag="GATEWAY"
+                )
+
+            except Exception as wb_err:
+                log.warning(f"[SCID] Streaming writeback failed: {wb_err}", tag="GATEWAY")
+
+
 @router.post("/v1/chat/completions")
 @router.post("/chat/completions")  # 别名路由，兼容 Base URL 为 /gateway 的客户端
 async def chat_completions(
     request: Request,
     token: str = Depends(authenticate_bearer)
 ):
-    """统一聊天完成端点 - 自动路由到最佳后端"""
+    """统一聊天完成端点 - 自动路由到最佳后端
+
+    [FIX 2026-01-20] 集成 SCID 架构，解决 Cursor 工具+思考调用问题
+    - 添加 SCID 生成和提取
+    - 使用 AnthropicSanitizer 进行消息净化
+    - 使用 ConversationStateManager 进行状态管理
+    - 在响应中返回 X-AG-Conversation-Id header
+    """
+    import uuid
     log.info(f"Chat request received", tag="GATEWAY")
+
+    # ================================================================
+    # [SCID] Step 1: 检测客户端类型并提取/生成 SCID
+    # ================================================================
+    scid = None
+    try:
+        from src.ide_compat import ClientTypeDetector, AnthropicSanitizer, ConversationStateManager
+        from src.cache.signature_database import SignatureDatabase
+
+        client_info = ClientTypeDetector.detect(dict(request.headers))
+
+        # 提取 SCID（优先使用 header 中的）
+        scid = client_info.scid if client_info else None
+        if not scid:
+            # 尝试从 header 中直接获取
+            scid = request.headers.get("x-ag-conversation-id") or request.headers.get("x-conversation-id")
+
+        # [FIX 2026-01-20] 暂时不在这里生成 SCID，等读取 body 后再处理
+        # 这样可以从 body 中提取 conversation_id 作为 SCID
+        scid_from_header = scid  # 保存 header 中的 SCID
+
+        if scid:
+            log.info(f"[SCID] Using SCID from header: {scid[:20]}..., client={client_info.display_name if client_info else 'unknown'}", tag="GATEWAY")
+
+    except Exception as e:
+        log.warning(f"Failed to detect client type or extract SCID: {e}", tag="GATEWAY")
+        client_info = None
+        scid = None
+
     try:
         raw_body = await request.json()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    # ================================================================
+    # [FIX 2026-01-20] 从 body 中提取 SCID（如果 header 中没有）
+    # Cursor 等客户端可能不发送 x-ag-conversation-id header，
+    # 但可能在 body 中包含 conversation_id 或其他会话标识
+    # ================================================================
+    if not scid and isinstance(raw_body, dict):
+        # 尝试从 body 中获取 conversation_id
+        body_conversation_id = raw_body.get("conversation_id")
+        if body_conversation_id and isinstance(body_conversation_id, str):
+            scid = f"scid_{body_conversation_id}"
+            log.info(f"[SCID] Using SCID from body conversation_id: {scid[:30]}...", tag="GATEWAY")
+        else:
+            # 如果没有 conversation_id，基于消息内容生成稳定的 fingerprint
+            # 这样同一对话的多次请求会得到相同的 SCID
+            from src.signature_cache import generate_session_fingerprint
+            messages = raw_body.get("messages", [])
+            if messages and len(messages) > 0:
+                # 使用前几条消息生成 fingerprint（避免因新消息导致 fingerprint 变化）
+                # 取前3条消息或全部（如果少于3条）
+                base_messages = messages[:min(3, len(messages))]
+                fingerprint = generate_session_fingerprint(base_messages)
+                if fingerprint:
+                    scid = f"scid_{fingerprint}"
+                    log.info(f"[SCID] Using SCID from message fingerprint: {scid[:30]}...", tag="GATEWAY")
+
+    # 如果仍然没有 SCID 且需要 sanitization，生成新的
+    if client_info and client_info.needs_sanitization and not scid:
+        scid = f"scid_{uuid.uuid4().hex}"
+        log.info(f"[SCID] Generated new SCID for {client_info.display_name}: {scid[:20]}...", tag="GATEWAY")
 
     # DEBUG: Log incoming messages to diagnose tool call issues
     raw_messages = raw_body.get("messages", [])
@@ -2930,10 +4788,178 @@ async def chat_completions(
     # Normalize request body to standard OpenAI format
     body = normalize_request_body(raw_body)
 
+    # ================================================================
+    # [SCID] Step 2: 消息净化（使用 AnthropicSanitizer）
+    # ================================================================
+    state_manager = None
+    last_signature = None
+
+    if client_info and client_info.needs_sanitization:
+        try:
+            # 获取状态管理器
+            try:
+                db = SignatureDatabase()
+                state_manager = ConversationStateManager(db)
+            except Exception as db_err:
+                log.warning(f"[SCID] Failed to initialize SignatureDatabase: {db_err}, using memory-only state manager", tag="GATEWAY")
+                state_manager = ConversationStateManager(None)
+
+            # 如果有 SCID，尝试获取权威历史和最后签名
+            if scid and state_manager:
+                state = state_manager.get_or_create_state(scid, client_info.client_type.value)
+                last_signature = state.last_signature
+
+                # 使用权威历史合并客户端消息
+                client_messages = body.get("messages", [])
+                merged_messages = state_manager.merge_with_client_history(scid, client_messages)
+
+                if merged_messages != client_messages:
+                    log.info(f"[SCID] Merged messages with authoritative history: {len(client_messages)} -> {len(merged_messages)}", tag="GATEWAY")
+                    body["messages"] = merged_messages
+
+            # 使用 AnthropicSanitizer 净化消息
+            sanitizer = AnthropicSanitizer()
+            messages = body.get("messages", [])
+
+            # 检测是否启用 thinking（OpenAI 格式可能没有 thinking 字段，但消息中可能有 thinking blocks）
+            thinking_enabled = body.get("thinking") is not None
+
+            # ================================================================
+            # [FIX 2026-01-20] 检测消息中是否有 thinking blocks（用于判断 thinking_enabled）
+            # 
+            # 注意：不再提取历史签名灌入缓存，因为：
+            # 1. Thinking signature 是会话绑定的，历史签名在新请求中已失效
+            # 2. sanitizer.py 已实现"直接删除历史 thinking blocks"的策略
+            # 3. 只保留最新消息的 thinking blocks（由 sanitizer 处理签名恢复）
+            # ================================================================
+            thinking_blocks_found = 0
+            last_extracted_signature = None
+
+            # 用于从 <think> 标签提取内容的正则表达式
+            import re
+            think_tag_pattern = re.compile(r'<think>(.*?)</think>', re.DOTALL | re.IGNORECASE)
+
+            # 识别最后一条 assistant 消息的索引（只从最新消息提取签名）
+            last_assistant_idx = None
+            for i in range(len(messages) - 1, -1, -1):
+                if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
+                    last_assistant_idx = i
+                    break
+
+            for msg_idx, msg in enumerate(messages):
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    content = msg.get("content")
+
+                    # ================================================================
+                    # 支持两种格式：
+                    # 1. 数组格式: content: [{ type: "thinking", thinking: "...", signature: "..." }]
+                    # 2. 字符串格式: content: "<think>...</think>正文"
+                    # ================================================================
+
+                    if isinstance(content, list):
+                        # 数组格式
+                        for block_idx, block in enumerate(content):
+                            if isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"):
+                                thinking_blocks_found += 1
+
+                                # 只从最新 assistant 消息提取签名（供 sanitizer 使用）
+                                if msg_idx == last_assistant_idx:
+                                    signature = block.get("signature") or block.get("thoughtSignature")
+                                    if signature and isinstance(signature, str) and len(signature) > 50:
+                                        if signature != "skip_thought_signature_validator":
+                                            last_extracted_signature = signature
+                                            log.debug(
+                                                f"[SCID] Extracted signature from latest assistant message: "
+                                                f"msg_idx={msg_idx}, sig_len={len(signature)}",
+                                                tag="GATEWAY"
+                                            )
+
+                    elif isinstance(content, str) and "<think>" in content.lower():
+                        # 字符串格式：包含 <think> 标签
+                        think_matches = think_tag_pattern.findall(content)
+                        for match_idx, thinking_text in enumerate(think_matches):
+                            thinking_blocks_found += 1
+                            thinking_text = thinking_text.strip()
+
+                            # 只从最新 assistant 消息尝试从缓存获取签名
+                            if msg_idx == last_assistant_idx:
+                                from src.signature_cache import get_cached_signature
+                                cached_sig = get_cached_signature(thinking_text)
+                                if cached_sig:
+                                    last_extracted_signature = cached_sig
+                                    log.debug(
+                                        f"[SCID] Found cached signature for latest string thinking: "
+                                        f"msg_idx={msg_idx}, sig_len={len(cached_sig)}",
+                                        tag="GATEWAY"
+                                    )
+
+            # [DEBUG] 记录扫描结果
+            log.info(
+                f"[SCID] Thinking blocks scan: found {thinking_blocks_found} thinking blocks in {len(messages)} messages, "
+                f"latest_signature={'extracted' if last_extracted_signature else 'none'}",
+                tag="GATEWAY"
+            )
+
+            # 更新 last_signature 供后续 sanitizer 使用（仅最新消息的签名）
+            if last_extracted_signature and not last_signature:
+                last_signature = last_extracted_signature
+
+            # 检查消息中是否有 thinking blocks（支持数组格式和字符串格式）
+            has_thinking_blocks = thinking_blocks_found > 0
+            if has_thinking_blocks:
+                thinking_enabled = True
+
+            if has_thinking_blocks or thinking_enabled:
+                sanitized_messages, final_thinking_enabled = sanitizer.sanitize_messages(
+                    messages=messages,
+                    thinking_enabled=thinking_enabled,
+                    session_id=scid,
+                    last_thought_signature=last_signature
+                )
+
+                body["messages"] = sanitized_messages
+
+                # ================================================================
+                # [FIX 2026-01-20] 增强 thinkingConfig 同步逻辑
+                # 确保所有路径都正确同步 thinking 配置
+                # ================================================================
+                if not final_thinking_enabled:
+                    # 1. 移除 body 中的 thinking 配置
+                    if "thinking" in body:
+                        log.info("[SCID] Removing thinking config due to sanitization", tag="GATEWAY")
+                        body.pop("thinking", None)
+
+                    # 2. 移除相关的 thinking 参数（如果有的话）
+                    for thinking_key in ("thinking_budget", "thinking_level", "thinking_config"):
+                        if thinking_key in body:
+                            log.debug(f"[SCID] Removing {thinking_key} due to thinking disabled", tag="GATEWAY")
+                            body.pop(thinking_key, None)
+
+                log.info(
+                    f"[SCID] Sanitized messages: "
+                    f"client={client_info.display_name}, "
+                    f"messages={len(messages)}->{len(sanitized_messages)}, "
+                    f"thinking={thinking_enabled}->{final_thinking_enabled}",
+                    tag="GATEWAY"
+                )
+
+        except Exception as e:
+            log.warning(f"[SCID] Message sanitization failed (non-fatal): {e}", tag="GATEWAY")
+            # 净化失败不影响主流程
+
     model = body.get("model", "")
     stream = body.get("stream", False)
 
     headers = dict(request.headers)
+
+    # ================================================================
+    # [SCID] Step 3: 添加 SCID 到请求头和请求体（供下游使用）
+    # ================================================================
+    if scid:
+        headers["x-ag-conversation-id"] = scid
+        # [FIX 2026-01-22] 将SCID添加到请求体中，供antigravity_router使用
+        # antigravity_router需要SCID来从权威历史恢复thinking块
+        body["_scid"] = scid
 
     result = await route_request_with_fallback(
         endpoint="/chat/completions",
@@ -2944,7 +4970,23 @@ async def chat_completions(
         stream=stream,
     )
 
+    # ================================================================
+    # [SCID] Step 4: 构建响应并添加 SCID header
+    # ================================================================
+    response_headers = {}
+    if scid:
+        response_headers["X-AG-Conversation-Id"] = scid
+
     if stream and hasattr(result, "__anext__"):
+        # ================================================================
+        # [SCID] Step 5a: 流式响应 - 使用包装器在完成时回写
+        # ================================================================
+        if scid and state_manager and client_info and client_info.needs_sanitization:
+            # 包装流式响应，在完成时回写状态
+            result = _wrap_stream_with_writeback(
+                result, scid, state_manager, body.get("messages", [])
+            )
+
         return StreamingResponse(
             result,
             media_type="text/event-stream",
@@ -2952,10 +4994,22 @@ async def chat_completions(
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
+                **response_headers,
             }
         )
 
-    return JSONResponse(content=result)
+    # ================================================================
+    # [SCID] Step 5b: 非流式响应 - 提取签名并回写状态
+    # ================================================================
+    if scid and state_manager and client_info and client_info.needs_sanitization:
+        try:
+            _writeback_non_streaming_response(
+                result, scid, state_manager, body.get("messages", [])
+            )
+        except Exception as wb_err:
+            log.warning(f"[SCID] Non-streaming writeback failed (non-fatal): {wb_err}", tag="GATEWAY")
+
+    return JSONResponse(content=result, headers=response_headers)
 
 
 async def convert_sse_to_augment_ndjson(sse_stream: AsyncGenerator) -> AsyncGenerator[str, None]:

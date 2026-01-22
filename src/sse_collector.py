@@ -24,13 +24,13 @@ Google API 对流式请求 (streamGenerateContent) 的配额限制比非流式�
 
 import json
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from log import log
 
 
 async def collect_sse_to_json(
-    lines: AsyncIterator[str],
+    lines: AsyncIterator[Union[str, bytes]],
     *,
     debug: bool = False,
 ) -> Dict[str, Any]:
@@ -76,6 +76,12 @@ async def collect_sse_to_json(
     try:
         async for line in lines:
             last_event_time = time.time()
+            
+            # ✅ [FIX 2026-01-22] 修复类型错误：处理 bytes 和 str 两种类型
+            # response.aiter_lines() 可能返回 bytes 或 str，需要统一处理
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="ignore")
+            
             line = line.strip()
 
             # 跳过空行和非 data 行
@@ -308,7 +314,7 @@ async def collect_sse_to_json(
 
 
 async def collect_sse_to_json_with_timeout(
-    lines: AsyncIterator[str],
+    lines: AsyncIterator[Union[str, bytes]],
     *,
     timeout_seconds: float = 300.0,
     debug: bool = False,

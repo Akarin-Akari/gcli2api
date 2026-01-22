@@ -11,3 +11,7 @@ motor>=3.7.1
 aiosqlite>=0.20.0
 pypinyin>=0.51.0
 tiktoken>=0.7.0
+# YAML 配置解析（用于 Gateway 模型路由配置）
+PyYAML>=6.0
+# TLS 指纹伪装（可选，不安装时自动降级到原生 httpx）
+curl_cffi>=0.7.0

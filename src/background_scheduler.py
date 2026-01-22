@@ -37,11 +37,14 @@ class _AsyncMinIntervalLimiter:
 
 
 class BackgroundScheduler:
-    """后台任务调度器"""
-    
+    """后台任务调度器
+
+    [v7.2] 人类化改进：添加刷新间隔随机抖动
+    """
+
     def __init__(self, credential_manager):
         """初始化调度器
-        
+
         Args:
             credential_manager: 凭证管理器实例
         """
@@ -50,6 +53,21 @@ class BackgroundScheduler:
         self.is_running = False
         self._cooldown_until: float = 0.0
         self._quota_refresh_limiter: Optional[_AsyncMinIntervalLimiter] = None
+
+    @staticmethod
+    def _apply_jitter(base_value: float, jitter_ratio: float) -> float:
+        """[v7.2新增] 应用随机抖动，模拟人类行为
+
+        Args:
+            base_value: 基础值
+            jitter_ratio: 抖动比例（如 0.15 表示 ±15%）
+
+        Returns:
+            带抖动的值
+        """
+        if jitter_ratio <= 0:
+            return base_value
+        return base_value * random.uniform(1.0 - jitter_ratio, 1.0 + jitter_ratio)
 
     async def _throttle_quota_refresh(self) -> None:
         if self._quota_refresh_limiter is None:
@@ -78,13 +96,18 @@ class BackgroundScheduler:
         
     async def _refresh_loop(self, interval_minutes: int):
         """刷新循环主逻辑
-        
+
+        [v7.2] 人类化改进：添加刷新间隔随机抖动（±15%）
+
         Args:
             interval_minutes: 刷新间隔（分钟）
         """
         run_immediately = os.getenv("BACKGROUND_REFRESH_RUN_IMMEDIATELY", "").lower() in ("true", "1", "yes", "on")
+
+        # [v7.2] 初始延迟也添加抖动
         if not run_immediately:
-            await asyncio.sleep(max(1, interval_minutes) * 60)
+            initial_delay = self._apply_jitter(max(1, interval_minutes) * 60, 0.15)
+            await asyncio.sleep(initial_delay)
 
         while self.is_running:
             try:
@@ -97,10 +120,11 @@ class BackgroundScheduler:
 
                 # 立即执行一次刷新
                 await self._refresh_all_quotas()
-                
-                # 等待下一个周期
-                log.debug(f"[BackgroundScheduler] 等待 {interval_minutes} 分钟后执行下一次刷新")
-                await asyncio.sleep(interval_minutes * 60)
+
+                # [v7.2] 等待下一个周期（添加±15%随机抖动）
+                jittered_interval = self._apply_jitter(interval_minutes * 60, 0.15)
+                log.debug(f"[BackgroundScheduler] 等待 {jittered_interval/60:.1f} 分钟后执行下一次刷新")
+                await asyncio.sleep(jittered_interval)
                 
             except asyncio.CancelledError:
                 log.info("[BackgroundScheduler] 调度器被取消")
